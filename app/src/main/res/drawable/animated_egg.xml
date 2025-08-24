@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Background glow -->
+    <path
+        android:fillColor="#33B39DDB"
+        android:pathData="M100,100m-90,0a90,90 0,1 1,180 0a90,90 0,1 1,-180 0"/>
+
+    <!-- Egg shadow -->
+    <path
+        android:fillColor="#1A000000"
+        android:pathData="M70,150C70,150 130,150 130,150C130,150 120,170 100,170C80,170 70,150 70,150Z"/>
+
+    <!-- Main egg shape: more rounded, less pointed top -->
+    <path
+        android:fillColor="#B39DDB"
+        android:pathData="M100,50
+            C130,55 150,100 140,140
+            C135,160 120,175 100,175
+            C80,175 65,160 60,140
+            C50,100 70,55 100,50Z"/>
+
+    <!-- Egg highlight: match new shape -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.3"
+        android:pathData="M105,65
+            C125,70 135,110 125,135
+            C120,145 110,150 100,145
+            C90,140 90,120 95,110
+            C100,90 100,70 105,65Z"/>
+
+    <!-- Decorative pattern -->
+    <path
+        android:fillColor="#6D4C91"
+        android:fillAlpha="0.2"
+        android:pathData="M85,110C85,110 95,110 95,110C95,110 95,120 85,120C75,120 75,110 85,110Z"/>
+    <path
+        android:fillColor="#6D4C91"
+        android:fillAlpha="0.2"
+        android:pathData="M105,120C105,120 115,120 115,120C115,120 115,130 105,130C95,130 95,120 105,120Z"/>
+    <path
+        android:fillColor="#6D4C91"
+        android:fillAlpha="0.2"
+        android:pathData="M85,130C85,130 95,130 95,130C95,130 95,140 85,140C75,140 75,130 85,130Z"/>
+
+    <!-- AR text with modern-->
+    <path
+        android:fillColor="#9C27B0"
+        android:pathData="M70,150C70,150 80,150 80,150C80,150 80,160 70,160C60,160 60,150 70,150Z"/>
+    <path
+        android:fillColor="#9C27B0"
+        android:pathData="M120,150C120,150 130,150 130,150C130,150 130,160 120,160C110,160 110,150 120,150Z"/>
+</vector>

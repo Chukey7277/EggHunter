@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/eggTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Egg Title"
+        android:textStyle="bold"
+        android:textSize="18sp"
+        android:paddingBottom="8dp" />
+
+    <TextView
+        android:id="@+id/eggDesc"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Egg Description"
+        android:textSize="14sp"
+        android:paddingBottom="8dp" />
+
+    <ImageView
+        android:id="@+id/eggPhoto"
+        android:layout_width="match_parent"
+        android:layout_height="200dp"
+        android:scaleType="centerCrop"
+        android:adjustViewBounds="true"
+        android:src="@drawable/ic_placeholder"
+        android:contentDescription="Egg photo" />
+
+    <Button
+        android:id="@+id/playAudio"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Play Audio"
+        android:visibility="gone"
+        android:layout_gravity="center_horizontal"
+        android:paddingTop="12dp"/>
+
+</LinearLayout>

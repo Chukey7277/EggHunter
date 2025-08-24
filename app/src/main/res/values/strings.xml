@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+   Copyright 2022 Google LLC
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+<resources>
+  <string translatable="false" name="app_name">Egg Hunter</string>
+  <string name="arcore_api_key">AIzaSyCTKfPYnVPRdR_NXhmTjt1iCYi4jJBOQ4A</string>
+  <string translatable="false" name="button_text_set_anchor">ANCHOR SETTING</string>
+  <string translatable="false" name="switch_render_streetscaope_geometry">SHOW GEOMETRY</string>
+  <string translatable="false" name="button_text_clear_anchors">CLEAR ALL ANCHORS</string>
+  <string translatable="false" name="tap_screen_text">TAP ON SCREEN TO CREATE ANCHOR</string>
+  <string translatable="false" name="status_unsupported">This device does not support the Geospatial API.</string>
+  <string translatable="false" name="status_pretracking">Localizing your device. This may take a moment.</string>
+  <string translatable="false" name="status_earth_state_error">There was an error, check that you have a valid authentication for the ARCore API.</string>
+  <string translatable="false" name="status_localize_hint">Move your phone around. For best results, go outside with a clear view of the sky for a good GPS signal.</string>
+  <string translatable="false" name="status_localize_timeout">Localization timed out. Please restart the app.</string>
+  <string translatable="false" name="status_localize_complete">Localization Complete</string>
+  <string translatable="false" name="status_localized_gps_only">Using GPS for localization.</string>
+  <string translatable="false" name="status_terrain_anchor">Terrain anchor state: %1$s</string>
+  <string translatable="false" name="status_rooftop_anchor">Rooftop anchor state: %1$s</string>
+  <string translatable="false" name="terrain_anchor_no_result_yet">Still resolving the terrain anchor. Please make sure you have a good GPS signal.</string>
+  <string translatable="false" name="terrain_anchor_resource_exhausted">Too many terrain anchors have already been held.</string>
+  <plurals name="status_anchors_set">
+    <item quantity="one">%1$d of %2$d anchor set.</item>
+    <item quantity="other">%1$d of %2$d anchors set.</item>
+  </plurals>
+  <string translatable="false" name="geospatial_pose_not_tracking">GEOSPATIAL POSE: Not tracking</string>
+  <string translatable="false" name="geospatial_pose" formatted="false">Lat/Lng: %.6f, %.6f\nHorizontal Accuracy: %.2f m\nAltitude: %.2f m\nVertical Accuracy: %.2f m\nEUS: %.2f, %.2f, %.2f, %.2f\nYaw Accuracy: %.2f°</string>
+  <string translatable="false" name="geospatial_pose_short" formatted="false">Lat/Lon: %.4f, %.4f\nAccuracy - Horizontal: %.2fm, Heading: %.2f°</string>
+  <string name="status_low_accuracy">Waiting for better GPS accuracy (currently > 15m)...</string>
+
+  <!-- Strings used in privacy notice dialog messages. [CHAR_LIMIT=NONE] -->
+  <string  name="share_experience_title">AR in the real world</string>
+  <!-- Privacy notice message. [CHAR_LIMIT=NONE] -->
+  <string name="share_experience_message">To power this session, Google will process visual data from your camera.</string>
+  <!-- Privacy notice accept. [CHAR_LIMIT=NONE] -->
+  <string name="agree_to_share">Get started</string>
+  <!-- Privacy notice learn more. [CHAR_LIMIT=NONE] -->
+  <string name="learn_more">Learn more</string>
+  <!-- Geospatial privacy website. [CHAR_LIMIT=NONE] -->
+  <string translatable="false" name="learn_more_url">https://developers.google.com/ar/data-privacy</string>
+
+  <string name="privacy_notice_title">AR Walking Tour Privacy</string>
+  <string name="privacy_notice_message">This app uses Google\'s ARCore Geospatial API. To function, it needs to access your device\'s location and may store some of this data with Google. This data is used to create and recall augmented reality content at specific real-world locations. By continuing, you agree to this.</string>
+  <string name="ok">OK</string>
+  <string name="cancel">Cancel</string>
+  <string name="walk_around_message">You can walk around now. Good luck finding easter eggs!</string>
+  <string name="tap_screen_to_place_anchor">Tap to place an anchor</string>
+  <string name="set_anchor">Set Anchor</string>
+  <string name="clear_anchors">Clear Anchors</string>
+</resources>

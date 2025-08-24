@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="lavender_light">#F3E8FF</color>
+    <color name="lavender_text">#6D4C91</color>
+    <color name="lavender">#B39DDB</color>
+    <color name="white">#FFFFFF</color>
+    <color name="lavender_bg">#E6E6FA</color>
+    <color name="dialog_title">#4B2067</color> <!-- Deep purple -->
+    <color name="dialog_message">#333344</color> <!-- Dark grayish blue -->
+
+<!-- Blues -->
+<color name="blue_lightest">#E3F2FD</color>  <!-- Very light blue -->
+<color name="blue_lighter">#BBDEFB</color>   <!-- Pastel blue -->
+<color name="blue_light">#64B5F6</color>     <!-- Light blue -->
+<color name="blue">#2196F3</color>           <!-- Primary blue -->
+<color name="blue_dark">#1976D2</color>      <!-- Dark blue -->
+<color name="blue_darker">#0D47A1</color>    <!-- Deep navy blue -->
+
+<!-- Text colors -->
+<color name="blue_text_primary">#0D47A1</color>   <!-- Dark navy for text -->
+<color name="blue_text_secondary">#1976D2</color> <!-- Darker medium blue -->
+<color name="blue_text_light">#64B5F6</color>     <!-- Light text blue -->
+
+<!-- Backgrounds -->
+<color name="blue_bg_light">#E3F2FD</color>  <!-- Soft background -->
+<color name="blue_bg_dark">#0D47A1</color>   <!-- Dark background -->
+<color name="blue_accent">#03A9F4</color>    <!-- Accent cyan-blue -->
+
+<!-- Special UI shades -->
+<color name="blue_dialog_title">#0B3C91</color>    <!-- Deep royal blue -->
+<color name="blue_dialog_message">#1E3A5F</color>  <!-- Muted navy gray -->
+</resources>
