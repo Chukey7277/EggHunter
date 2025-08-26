@@ -1,5 +1,6 @@
 package com.example.virtualtourar;
 
+import android.Manifest;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -87,22 +88,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-import android.Manifest;
-import android.content.pm.PackageManager;
-import android.widget.Toast;
-import androidx.core.app.NotificationCompat;
-import androidx.core.app.NotificationManagerCompat;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import android.media.AudioAttributes;
 
-import android.widget.EditText;
-import android.text.InputType;
-
-
-
-
-
-
-
-
+/** Geospatial viewer (SampleRender): shows OBJ egg at exact saved WGS84 (lat/lng/alt or terrain). */
 public class GeospatialActivity extends AppCompatActivity
         implements SampleRender.Renderer, PrivacyNoticeDialogFragment.NoticeDialogListener {
 
@@ -113,30 +102,30 @@ public class GeospatialActivity extends AppCompatActivity
     private static final float Z_FAR  = 1000f;
 
     // Model
-    private static final String EGG_MODEL   = "models/egg_2.obj";
-    private static final String EGG_TEXTURE = "models/egg_2_colour.jpg";
-    private static final float  EGG_SCALE   = 0.01f;
+    private static final String EGG_MODEL    = "models/egg_2.obj";
+    private static final String EGG_TEXTURE  = "models/egg_2_colour.jpg";
+    private static final float  EGG_SCALE    = 0.01f;
     private static final float  MODEL_LIFT_M = 0.05f; // tiny lift to avoid ground clipping
 
-    // Placement gating (stricter → fewer bad placements)
+    // Placement gating
     private static final double MAX_H_ACC_TO_PLACE = 60.0; // meters
     private static final double MAX_V_ACC_TO_PLACE = 40.0; // meters
-
-    // Optional altitude bias if your building’s alt is systemically off (keep 0 unless needed)
     private static final double ALT_GLOBAL_OFFSET_M = 0.0;
 
     // Tap picking thresholds
-    private static final float PICK_BASE_RADIUS_M   = 0.18f;  // sphere radius at 0 m
-    private static final float PICK_RADIUS_PER_M    = 0.030f; // growth per meter distance
-    private static final float PICK_MAX_RADIUS_M    = 0.55f;  // clamp
-    private static final float PICK_MAX_SCREEN_PX   = 64f;    // extra screen test
+    private static final float PICK_BASE_RADIUS_M = 0.24f;
+    private static final float PICK_RADIUS_PER_M  = 0.040f;
+    private static final float PICK_MAX_RADIUS_M  = 0.55f;
 
-    // Proximity nudge (vibration/heads-up when near an egg)
-    private static final double NEARBY_RADIUS_M     = 8.0;    // horizontal distance
-    private static final double NEARBY_ALT_TOL_M    = 4.0;    // vertical tolerance
-    private static final long   NEARBY_VIBRATE_MS   = 35L;
-    private static final String NOTIF_CHANNEL_ID    = "egghunter.nearby";
-    private static final int    NOTIF_ID_BASE       = 7000;
+    private long lastUiStatusAt = 0L;
+    private static final long UI_STATUS_MS = 400L;
+
+    // Proximity heads-up
+    private static final double NEARBY_RADIUS_M  = 8.0;
+    private static final double NEARBY_ALT_TOL_M = 4.0;
+    private static final long   NEARBY_VIBRATE_MS = 35L;
+    private static final String NOTIF_CHANNEL_ID = "egghunter.nearby";
+    private static final int    NOTIF_ID_BASE    = 7000;
 
     // UI
     private GLSurfaceView surfaceView;
@@ -167,7 +156,7 @@ public class GeospatialActivity extends AppCompatActivity
     private EggRepository repository;
     private final List<EggEntry> eggs = new ArrayList<>();
 
-    // Media URL caches (per-egg)
+    // Media URL caches
     private final Map<String, Uri> imageUrlCache = new HashMap<>();
     private final Map<String, Uri> audioUrlCache = new HashMap<>();
 
@@ -199,16 +188,15 @@ public class GeospatialActivity extends AppCompatActivity
     // Nearby notification gating
     private final Set<String> nearbyNotified = new HashSet<>();
 
-    private static final int REQUEST_CODE = 1;  // Or any unique integer for your permission request
-
-    private static final int REQUEST_BACKGROUND_LOCATION = 101;
-
+    private static final int REQUEST_CODE = 700;          // for POST_NOTIFICATIONS
+    private static final int REQUEST_BACKGROUND_LOCATION = 701;
 
     // ---------- lifecycle ----------
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main); // must contain @id/surfaceview & @id/status_text_view
+        // activity_main must contain @id/surfaceview and @id/status_text_view
+        setContentView(R.layout.activity_main);
 
         sharedPreferences = getSharedPreferences("GeospatialActivity", Context.MODE_PRIVATE);
         surfaceView = findViewById(R.id.surfaceview);
@@ -221,7 +209,6 @@ public class GeospatialActivity extends AppCompatActivity
         render = new SampleRender(surfaceView, this, getAssets());
         installRequested = false;
 
-        // Firebase anonymous sign-in (helps Storage getDownloadUrl())
         try {
             FirebaseAuth.getInstance().signInAnonymously()
                     .addOnFailureListener(e -> Log.w(TAG, "Firebase anonymous auth failed", e));
@@ -229,15 +216,25 @@ public class GeospatialActivity extends AppCompatActivity
             Log.w(TAG, "FirebaseAuth init skipped", t);
         }
 
-        // Gestures
+        // Gesturessss
         gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onSingleTapUp(MotionEvent e) {
-                synchronized (singleTapLock) { queuedSingleTap = e; }
+                synchronized (singleTapLock) {
+                    if (queuedSingleTap != null) queuedSingleTap.recycle();
+                    queuedSingleTap = MotionEvent.obtain(e); // clone; don't keep recycled instance
+                }
                 return true;
             }
             @Override public boolean onDown(MotionEvent e) { return true; }
         });
-        surfaceView.setOnTouchListener((v, ev) -> gestureDetector.onTouchEvent(ev));
+        gestureDetector.setIsLongpressEnabled(false);
+
+// Always consume the touch so nothing else steals it
+        surfaceView.setOnTouchListener((v, ev) -> {
+            gestureDetector.onTouchEvent(ev);
+            return true;
+        });
+
 
         // Fetch eggs
         repository = new EggRepository();
@@ -250,8 +247,6 @@ public class GeospatialActivity extends AppCompatActivity
                     nearbyNotified.clear();
                     Log.d(TAG, "Fetched eggs: " + eggs.size());
                     toast("Eggs fetched: " + eggs.size());
-
-                    // for geofence
                     new GeofenceManager(this).registerForEggs(list);
                 })
                 .addOnFailureListener(e -> {
@@ -284,10 +279,7 @@ public class GeospatialActivity extends AppCompatActivity
         if (openId != null) {
             EggEntry toOpen = null;
             for (EggEntry e : eggs) { if (openId.equals(e.id)) { toOpen = e; break; } }
-            if (toOpen != null) {
-                final EggEntry finalToOpen = toOpen;
-                runOnUiThread(() -> showEggDialog(finalToOpen));
-            }
+            if (toOpen != null) showEggDialog(toOpen);
             getIntent().removeExtra("openEggId");
         }
     }
@@ -311,7 +303,7 @@ public class GeospatialActivity extends AppCompatActivity
         FullScreenHelper.setFullScreenOnWindowFocusChanged(this, hasFocus);
     }
 
-    // ---------- permissions ----------
+    // ---------- permissions / notifications ----------
 
     private void postNearbyNotification(EggEntry e) {
         try {
@@ -331,17 +323,15 @@ public class GeospatialActivity extends AppCompatActivity
                     .setAutoCancel(true);
 
             NotificationManagerCompat nm = NotificationManagerCompat.from(this);
-            // Check if notification permission is granted
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
-                // If permission is granted, send the notification
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                    == PackageManager.PERMISSION_GRANTED) {
                 nm.notify(NOTIF_ID_BASE + (e.id != null ? e.id.hashCode() & 0x0FFF : 0x123), b.build());
             } else {
-                // If permission is not granted, request permission
-                ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_CODE);
+                ActivityCompat.requestPermissions(this,
+                        new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_CODE);
             }
-
         } catch (Throwable t) {
-            Log.w(TAG, "postNearbyNotification failed (likely missing POST_NOTIFICATIONS on Android 13+).", t);
+            Log.w(TAG, "postNearbyNotification failed.", t);
         }
     }
 
@@ -349,17 +339,12 @@ public class GeospatialActivity extends AppCompatActivity
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 
-        //for background notification
         if (requestCode == REQUEST_BACKGROUND_LOCATION) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                // Background location granted — proceed with geofence registration
-                // (If needed, re-register geofences here)
-            } else {
+            if (!(grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED)) {
                 Toast.makeText(this, "Background location permission is required for full experience.", Toast.LENGTH_LONG).show();
-                // Consider showing rationale or guiding user to Settings
             }
         }
-        // Check if camera permission is granted
+
         if (!CameraPermissionHelper.hasCameraPermission(this)) {
             Toast.makeText(this, "Camera permission is required", Toast.LENGTH_LONG).show();
             if (!CameraPermissionHelper.shouldShowRequestPermissionRationale(this)) {
@@ -369,7 +354,6 @@ public class GeospatialActivity extends AppCompatActivity
             return;
         }
 
-        // Check if location permission is granted
         if (LocationPermissionHelper.hasFineLocationPermissionsResponseInResult(permissions)
                 && !LocationPermissionHelper.hasFineLocationPermission(this)) {
             Toast.makeText(this, "Precise location permission is required", Toast.LENGTH_LONG).show();
@@ -377,26 +361,8 @@ public class GeospatialActivity extends AppCompatActivity
                 LocationPermissionHelper.launchPermissionSettings(this);
             }
             finish();
-            return;
-        }
-
-        // Handle notification permission result (Android 13+)
-        if (requestCode == REQUEST_CODE) {
-            for (int i = 0; i < permissions.length; i++) {
-                if (Manifest.permission.POST_NOTIFICATIONS.equals(permissions[i])) {
-                    if (grantResults[i] == PackageManager.PERMISSION_GRANTED) {
-                        // Permission just granted! If you want to send a notification now,
-                        // call your notification logic here, e.g.:
-                        // postNearbyNotification(pendingEggEntry);
-                        // Only works if you stored which EggEntry to notify about when requesting.
-                    } else {
-                        Toast.makeText(this, "Notification permission is required to send notifications", Toast.LENGTH_LONG).show();
-                    }
-                }
-            }
         }
     }
-
 
     // ---------- privacy dialog ----------
 
@@ -449,9 +415,7 @@ public class GeospatialActivity extends AppCompatActivity
             }
             Config config = session.getConfig();
             config.setGeospatialMode(Config.GeospatialMode.ENABLED);
-            // Faster focus acquisition
             try { config.setFocusMode(Config.FocusMode.AUTO); } catch (Throwable ignore) {}
-            // Keep Streetscape/Depth disabled for hunter (we only need camera + geospatial anchors)
             session.configure(config);
             session.resume();
         } catch (CameraNotAvailableException e) { message = "Camera not available"; exception = e; }
@@ -598,22 +562,17 @@ public class GeospatialActivity extends AppCompatActivity
         }
         updateEarthStatus(earth, camPose, null);
 
-        // Accuracy gating to avoid wrong floors / stacking
         double hAcc = camPose.getHorizontalAccuracy();
         double vAcc = Double.isNaN(camPose.getVerticalAccuracy()) ? 999 : camPose.getVerticalAccuracy();
         if (hAcc <= MAX_H_ACC_TO_PLACE && vAcc <= MAX_V_ACC_TO_PLACE) {
             placeEggAnchorsExactly(earth, camPose);
-            // one-shot proximity nudge
             checkNearbyNudges(camPose);
-        } else {
-//            updateEarthStatus(earth, camPose,
-//                    String.format(Locale.US, "Waiting accuracy… ±H=%.1fm ±V=%.1fm", hAcc, vAcc));
         }
 
-        // Handle tap
+        // Taps
         try { handleTap(frame); } catch (Throwable t) { Log.w(TAG, "handleTap failed", t); }
 
-        // Draw
+        // Draw eggs
         camera.getProjectionMatrix(projMatrix, 0, Z_NEAR, Z_FAR);
         camera.getViewMatrix(viewMatrix, 0);
 
@@ -625,7 +584,7 @@ public class GeospatialActivity extends AppCompatActivity
 
                 Pose p = a.getPose();
 
-                // Optional: micro-stabilize translation only (won't “pull” eggs)
+                // Optional micro-stabilize translation (no rotation change)
                 float[] t = p.getTranslation();
                 float[] last = lastStableT.get(entry.getValue().id);
                 if (last != null && SMOOTHING_ALPHA < 1f) {
@@ -638,15 +597,13 @@ public class GeospatialActivity extends AppCompatActivity
 
                 p.toMatrix(modelMatrix, 0);
 
-                // OBJ is Z-up → rotate -90° about X to make it Y-up
+                // OBJ is Z-up → rotate −90° about X to Y-up
                 float[] Rx = new float[16];
                 Matrix.setRotateM(Rx, 0, -90f, 1f, 0f, 0f);
                 Matrix.multiplyMM(modelMatrix, 0, modelMatrix, 0, Rx, 0);
 
-                // small lift to reduce ground clipping
+                // small lift & scale
                 Matrix.translateM(modelMatrix, 0, 0f, MODEL_LIFT_M, 0f);
-
-                // scale
                 float[] S = new float[16];
                 Matrix.setIdentityM(S, 0);
                 S[0] = EGG_SCALE; S[5] = EGG_SCALE; S[10] = EGG_SCALE;
@@ -666,6 +623,9 @@ public class GeospatialActivity extends AppCompatActivity
     }
 
     private void updateEarthStatus(@Nullable Earth earth, @Nullable GeospatialPose pose, @Nullable String override) {
+        long now = System.currentTimeMillis();
+        if (override == null && now - lastUiStatusAt < UI_STATUS_MS) return;
+        lastUiStatusAt = now;
         if (override != null) {
             runOnUiThread(() -> { statusText.setText(override); statusText.setVisibility(View.VISIBLE); });
             return;
@@ -708,23 +668,19 @@ public class GeospatialActivity extends AppCompatActivity
 
             final double lat = e.geo.getLatitude();
             final double lng = e.geo.getLongitude();
-
-            // Heading → quaternion about +Y (EUS frame uses +Y up)
             final double yawDeg = (e.heading != null) ? e.heading : safeHeadingDeg(currentPose);
             final float[] q = yawToQuaternion((float) yawDeg);
 
             try {
                 if (e.alt != null) {
-                    // Saved WGS84 altitude — place exactly at that level (+ optional global tweak).
                     final double alt = e.alt + ALT_GLOBAL_OFFSET_M;
                     Anchor geo = earth.createAnchor(lat, lng, alt, q[0], q[1], q[2], q[3]);
                     synchronized (anchorsLock) {
                         anchorToEgg.put(geo, e);
                         placedIds.add(e.id);
                     }
-                    Log.d(TAG, "Placed GEOSPATIAL exact-alt for " + e.id + "  lat=" + lat + " lon=" + lng + " alt=" + alt);
+                    Log.d(TAG, "Placed GEOSPATIAL exact-alt for " + e.id);
                 } else {
-                    // No altitude saved — prefer Terrain; fallback to camera altitude.
                     try {
                         earth.resolveAnchorOnTerrainAsync(
                                 lat, lng,
@@ -787,15 +743,12 @@ public class GeospatialActivity extends AppCompatActivity
                 nearbyNotified.add(e.id);
                 vibrate(NEARBY_VIBRATE_MS);
                 toast("Nearby: " + (e.title != null && !e.title.isEmpty() ? e.title : "an egg"));
-
-                // Optional heads-up notification (no-op if POST_NOTIFICATIONS not granted on Android 13+)
                 postNearbyNotification(e);
             }
         }
     }
 
     private static double haversineMeters(double lat1, double lon1, double lat2, double lon2) {
-        // fast-enough for short distances
         double R = 6371000.0;
         double dLat = Math.toRadians(lat2 - lat1);
         double dLon = Math.toRadians(lon2 - lon1);
@@ -806,14 +759,12 @@ public class GeospatialActivity extends AppCompatActivity
         return R*c;
     }
 
-    // ---------- tap → ray picking on egg (strict) ----------
+    // ---------- tap → ray picking ----------
 
     private void handleTap(Frame frame) {
         final MotionEvent tap;
         synchronized (singleTapLock) { tap = queuedSingleTap; queuedSingleTap = null; }
         if (tap == null) return;
-
-        Log.d(TAG, "Handling tap at (" + tap.getX() + ", " + tap.getY() + ")");
 
         final Camera cam = frame.getCamera();
         if (cam.getTrackingState() != TrackingState.TRACKING) return;
@@ -821,63 +772,18 @@ public class GeospatialActivity extends AppCompatActivity
         cam.getProjectionMatrix(projMatrix, 0, Z_NEAR, Z_FAR);
         cam.getViewMatrix(viewMatrix, 0);
 
-        // 1) precise ray/sphere pick
         PickResult pr = pickEggByRay(tap.getX(), tap.getY(), viewMatrix, projMatrix,
                 surfaceView.getWidth(), surfaceView.getHeight());
-
-        // 2) extra screen-space proximity test to avoid “random” taps
-        if (pr != null) {
-            float[] screen = new float[2];
-            if (projectAnchorToScreen(pr.anchor, viewMatrix, projMatrix, screen)) {
-                float dx = tap.getX() - screen[0];
-                float dy = tap.getY() - screen[1];
-                float distPx = (float) Math.hypot(dx, dy);
-//                if (distPx > PICK_MAX_SCREEN_PX) {
-//                    pr = null;
-//                }
-            }
-        }
 
         if (pr != null) {
             final EggEntry hit = pr.egg;
             runOnUiThread(() -> {
-                if (!isFinishing() && !isDestroyed())
-                    showEggDialog(hit);
-                Log.d(TAG, "Egg tapped: " + pr.egg.id);
+                if (!isFinishing() && !isDestroyed()) showEggOrQuiz(hit);
             });
         } else {
             runOnUiThread(() ->
                     Toast.makeText(this, "Tap directly on an egg", Toast.LENGTH_SHORT).show());
-            Log.d(TAG, "No egg tapped at location");
         }
-    }
-
-    private boolean projectAnchorToScreen(Anchor a, float[] view, float[] proj, float[] out2) {
-        if (a == null || a.getTrackingState() != TrackingState.TRACKING) return false;
-        Pose pose = a.getPose();
-        float[] model = new float[16];
-        pose.toMatrix(model, 0);
-
-        float[] mvp = new float[16];
-        Matrix.multiplyMM(mvp, 0, view, 0, model, 0);
-        Matrix.multiplyMM(mvp, 0, proj, 0, mvp, 0);
-
-        float[] clip = new float[4];
-        Matrix.multiplyMV(clip, 0, mvp, 0, new float[]{0, 0, 0, 1}, 0);
-
-        float w = clip[3];
-        if (w == 0f) return false;
-
-        float ndcX = clip[0] / w;
-        float ndcY = clip[1] / w;
-
-        if (ndcX < -1.2f || ndcX > 1.2f || ndcY < -1.2f || ndcY > 1.2f) return false;
-
-        int vw = surfaceView.getWidth();
-        int vh = surfaceView.getHeight();
-        out2[0] = (ndcX + 1f) * 0.5f * vw;
-        out2[1] = (1f - ndcY) * 0.5f * vh;
-        return true;
     }
 
     private static class PickResult {
@@ -885,20 +791,16 @@ public class GeospatialActivity extends AppCompatActivity
         PickResult(Anchor a, EggEntry e, float t) { anchor = a; egg = e; tAlong = t; }
     }
 
-    /** Ray-sphere pick in world space. Sphere radius ≈ physical model size (very tight). */
     @Nullable
     private PickResult pickEggByRay(float sx, float sy, float[] view, float[] proj, int vw, int vh) {
-        // Build inverse VP
         float[] vp = new float[16];
         float[] invVP = new float[16];
         Matrix.multiplyMM(vp, 0, proj, 0, view, 0);
         if (!Matrix.invertM(invVP, 0, vp, 0)) return null;
 
-        // NDC coordinates
         float x = (2f * sx) / vw - 1f;
         float y = 1f - (2f * sy) / vh;
 
-        // Unproject near & far
         float[] near = {x, y, -1f, 1f};
         float[] far  = {x, y,  1f, 1f};
         float[] nearW = new float[4];
@@ -906,8 +808,8 @@ public class GeospatialActivity extends AppCompatActivity
         Matrix.multiplyMV(nearW, 0, invVP, 0, near, 0);
         Matrix.multiplyMV(farW , 0, invVP, 0, far, 0);
         for (int i=0;i<3;i++){ nearW[i] /= nearW[3]; farW[i] /= farW[3]; }
-        float[] o = {nearW[0], nearW[1], nearW[2]};                 // ray origin
-        float[] d = {farW[0]-o[0], farW[1]-o[1], farW[2]-o[2]};     // ray dir
+        float[] o = {nearW[0], nearW[1], nearW[2]};
+        float[] d = {farW[0]-o[0], farW[1]-o[1], farW[2]-o[2]};
         normalize3(d);
 
         PickResult best = null;
@@ -922,7 +824,6 @@ public class GeospatialActivity extends AppCompatActivity
 
                 float[] c = a.getPose().getTranslation();
 
-                // ensure in front of camera
                 float[] v = {c[0]-o[0], c[1]-o[1], c[2]-o[2]};
                 float vd = dot3(v, d);
                 if (vd <= 0f) continue;
@@ -931,7 +832,6 @@ public class GeospatialActivity extends AppCompatActivity
                 float radius = Math.min(PICK_MAX_RADIUS_M,
                         PICK_BASE_RADIUS_M + PICK_RADIUS_PER_M * Math.min(40f, distanceMeters));
 
-                // compute shortest distance from ray to center
                 float[] projV = {d[0]*vd, d[1]*vd, d[2]*vd};
                 float[] perp  = {v[0]-projV[0], v[1]-projV[1], v[2]-projV[2]};
                 float dist = len3(perp);
@@ -953,7 +853,6 @@ public class GeospatialActivity extends AppCompatActivity
 
     // ---------- media helpers ----------
 
-    /** Normalize various path styles (quoted, gs://, REST without alt=media). */
     @Nullable
     private String normalizeUrlOrPath(@Nullable String raw) {
         if (raw == null) return null;
@@ -973,27 +872,37 @@ public class GeospatialActivity extends AppCompatActivity
         for (EggEntry e : list) {
             if (e == null || e.id == null) continue;
 
-            // IMAGE: prefer cardImageUrl, else first photoPaths
-            String img = normalizeUrlOrPath(e.cardImageUrl);
-            if ((img == null || img.isEmpty()) && e.photoPaths != null && !e.photoPaths.isEmpty()) {
-                img = normalizeUrlOrPath(e.photoPaths.get(0));
-            }
+            String img = normalizeUrlOrPath(
+                    (e.cardImageUrl != null && !e.cardImageUrl.isEmpty())
+                            ? e.cardImageUrl
+                            : (e.photoPaths != null && !e.photoPaths.isEmpty() ? e.photoPaths.get(0) : null));
+
             if (img != null) {
                 if (img.startsWith("http")) {
-                    imageUrlCache.put(e.id, Uri.parse(img));
+                    Uri uri = Uri.parse(img);
+                    imageUrlCache.put(e.id, uri);
+                    // Warm Glide's disk cache so dialogs are instant even on shaky networks
+                    Glide.with(getApplicationContext())
+                            .load(uri).diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                            .timeout(20_000) // 20s
+                            .preload();
                 } else {
                     try {
                         StorageReference ref = img.startsWith("gs://")
                                 ? FirebaseStorage.getInstance().getReferenceFromUrl(img)
                                 : FirebaseStorage.getInstance().getReference().child(img);
-                        ref.getDownloadUrl().addOnSuccessListener(uri -> imageUrlCache.put(e.id, uri));
+                        ref.getDownloadUrl().addOnSuccessListener(uri -> {
+                            imageUrlCache.put(e.id, uri);
+                            Glide.with(getApplicationContext())
+                                    .load(uri).diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                                    .timeout(20_000).preload();
+                        });
                     } catch (Throwable t) {
                         Log.w(TAG, "Image prewarm error for " + e.id + " (" + img + ")", t);
                     }
                 }
             }
 
-            // AUDIO
             String au = normalizeUrlOrPath(e.audioUrl != null ? e.audioUrl : e.audioPath);
             if (au != null) {
                 if (au.startsWith("http")) {
@@ -1015,17 +924,17 @@ public class GeospatialActivity extends AppCompatActivity
     private void loadIntoImageView(@Nullable String urlOrPath, ImageView target, @Nullable String eggId) {
         if (target == null) return;
 
-        // cache hit
-        if (eggId != null) {
-            Uri cached = imageUrlCache.get(eggId);
-            if (cached != null) {
-                Glide.with(this)
-                        .load(cached)
-                        .placeholder(android.R.drawable.ic_menu_report_image)
-                        .error(android.R.drawable.ic_menu_report_image)
-                        .into(target);
-                return;
-            }
+        Uri cached = (eggId != null) ? imageUrlCache.get(eggId) : null;
+        if (cached != null) {
+            Glide.with(this)
+                    .load(cached)
+                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                    .timeout(20_000)
+                    .placeholder(android.R.drawable.ic_menu_report_image)
+                    .error(android.R.drawable.ic_menu_report_image)
+                    .dontAnimate()
+                    .into(target);
+            return;
         }
 
         String s = normalizeUrlOrPath(urlOrPath);
@@ -1036,12 +945,16 @@ public class GeospatialActivity extends AppCompatActivity
             if (eggId != null) imageUrlCache.put(eggId, uri);
             Glide.with(this)
                     .load(uri)
+                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                    .timeout(20_000)
                     .placeholder(android.R.drawable.ic_menu_report_image)
                     .error(android.R.drawable.ic_menu_report_image)
+                    .dontAnimate()
                     .into(target);
             return;
         }
 
+        // gs:// or bucket path → resolve then Glide (unchanged, add timeout + cache)
         try {
             StorageReference ref = s.startsWith("gs://")
                     ? FirebaseStorage.getInstance().getReferenceFromUrl(s)
@@ -1051,8 +964,11 @@ public class GeospatialActivity extends AppCompatActivity
                         if (eggId != null) imageUrlCache.put(eggId, uri);
                         Glide.with(this)
                                 .load(uri)
+                                .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                                .timeout(20_000)
                                 .placeholder(android.R.drawable.ic_menu_report_image)
                                 .error(android.R.drawable.ic_menu_report_image)
+                                .dontAnimate()
                                 .into(target);
                     })
                     .addOnFailureListener(err -> target.setImageResource(android.R.color.transparent));
@@ -1062,9 +978,12 @@ public class GeospatialActivity extends AppCompatActivity
         }
     }
 
+
     private interface UriCallback { void accept(Uri uri); }
 
-    private void resolveToStreamUri(@Nullable String urlOrPath, @Nullable String eggId, UriCallback callback) {
+    private void resolveToStreamUri(@Nullable String urlOrPath,
+                                    @Nullable String eggId,
+                                    UriCallback callback) {
         if (callback == null) return;
 
         if (eggId != null) {
@@ -1086,16 +1005,30 @@ public class GeospatialActivity extends AppCompatActivity
             StorageReference ref = s.startsWith("gs://")
                     ? FirebaseStorage.getInstance().getReferenceFromUrl(s)
                     : FirebaseStorage.getInstance().getReference().child(s);
+
             ref.getDownloadUrl()
                     .addOnSuccessListener(uri -> {
                         if (eggId != null) audioUrlCache.put(eggId, uri);
                         callback.accept(uri);
                     })
-                    .addOnFailureListener(err -> Log.w(TAG, "Audio URL resolve failed: " + s, err));
+                    .addOnFailureListener(err -> {
+                        Log.w(TAG, "Audio URL resolve failed: " + s, err);
+                        // optional tiny retry after 1s (helps right after auth)
+                        new android.os.Handler(getMainLooper()).postDelayed(() ->
+                                        ref.getDownloadUrl()
+                                                .addOnSuccessListener(uri -> {
+                                                    if (eggId != null) audioUrlCache.put(eggId, uri);
+                                                    callback.accept(uri);
+                                                })
+                                                .addOnFailureListener(e2 ->
+                                                        Log.w(TAG, "Audio resolve retry failed: " + s, e2))
+                                , 1000);
+                    });
         } catch (Throwable t) {
             Log.w(TAG, "Audio resolve error: " + s, t);
         }
     }
+
 
     // ---------- utils ----------
 
@@ -1103,7 +1036,6 @@ public class GeospatialActivity extends AppCompatActivity
     private static float[] yawToQuaternion(float yawDeg) {
         float r = (float) Math.toRadians(yawDeg);
         float s = (float) Math.sin(r * 0.5f), c = (float) Math.cos(r * 0.5f);
-        // (x,y,z,w); yaw about +Y (up); Earth frame is East(+X), Up(+Y), South(+Z)
         return new float[]{0f, s, 0f, c};
     }
 
@@ -1141,48 +1073,82 @@ public class GeospatialActivity extends AppCompatActivity
         }
     }
 
-    // ---------- dialog ----------
-
+    // Requires: import android.media.AudioAttributes;
     private void showEggDialog(EggEntry egg) {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         View v = getLayoutInflater().inflate(R.layout.dialog_egg, null);
         builder.setView(v);
 
-        TextView title = v.findViewById(R.id.eggTitle);
-        TextView desc  = v.findViewById(R.id.eggDesc);
-        ImageView photo = v.findViewById(R.id.eggPhoto);
+        TextView title   = v.findViewById(R.id.eggTitle);
+        TextView desc    = v.findViewById(R.id.eggDesc);
+        ImageView photo  = v.findViewById(R.id.eggPhoto);
         Button playAudio = v.findViewById(R.id.playAudio);
 
         title.setText(egg.title != null && !egg.title.isEmpty() ? egg.title : "Egg");
         desc.setText(egg.description != null ? egg.description : "");
 
-        // Image: prefer cardImageUrl, else first photoPaths
         String img = (egg.cardImageUrl != null && !egg.cardImageUrl.isEmpty())
                 ? egg.cardImageUrl
                 : (egg.photoPaths != null && !egg.photoPaths.isEmpty() ? egg.photoPaths.get(0) : null);
         loadIntoImageView(img, photo, egg.id);
 
-        // Audio
-        String audio = (egg.audioUrl != null && !egg.audioUrl.isEmpty())
-                ? egg.audioUrl
-                : egg.audioPath;
+        String audio = (egg.audioUrl != null && !egg.audioUrl.isEmpty()) ? egg.audioUrl : egg.audioPath;
 
         final MediaPlayer[] mp = new MediaPlayer[1];
+
         if (audio != null && !audio.isEmpty()) {
             playAudio.setVisibility(View.VISIBLE);
-            playAudio.setOnClickListener(v1 -> resolveToStreamUri(audio, egg.id, uri -> {
-                try {
-                    if (mp[0] != null) { try { mp[0].stop(); mp[0].release(); } catch (Exception ignore) {} }
-                    mp[0] = new MediaPlayer();
-                    mp[0].setDataSource(this, uri);
-                    mp[0].setOnPreparedListener(MediaPlayer::start);
-                    mp[0].setOnCompletionListener(p -> { try { p.release(); } catch (Exception ignore) {} mp[0] = null; });
-                    mp[0].prepareAsync();
-                } catch (Exception ex) {
-                    Log.e(TAG, "Audio play failed", ex);
-                    Toast.makeText(this, "Audio error", Toast.LENGTH_SHORT).show();
+            playAudio.setText("Play audio");
+
+            playAudio.setOnClickListener(v1 -> {
+                // Toggle: if already playing, stop.
+                if (mp[0] != null) {
+                    try { mp[0].stop(); mp[0].release(); } catch (Exception ignore) {}
+                    mp[0] = null;
+                    playAudio.setText("Play audio");
+                    return;
                 }
-            }));
+
+                playAudio.setText("Loading…");
+
+                resolveToStreamUri(audio, egg.id, uri -> runOnUiThread(() -> {
+                    try {
+                        MediaPlayer p = new MediaPlayer();
+                        if (Build.VERSION.SDK_INT >= 21) {
+                            p.setAudioAttributes(new AudioAttributes.Builder()
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                                    .build());
+                        }
+                        p.setDataSource(this, uri);
+
+                        p.setOnPreparedListener(player -> {
+                            player.start();
+                            playAudio.setText("Stop");
+                        });
+                        p.setOnCompletionListener(player -> {
+                            try { player.release(); } catch (Exception ignore) {}
+                            mp[0] = null;
+                            playAudio.setText("Play audio");
+                        });
+                        p.setOnErrorListener((player, what, extra) -> {
+                            Log.e(TAG, "MediaPlayer error what=" + what + " extra=" + extra);
+                            Toast.makeText(this, "Audio error", Toast.LENGTH_SHORT).show();
+                            try { player.release(); } catch (Exception ignore) {}
+                            mp[0] = null;
+                            playAudio.setText("Play audio");
+                            return true;
+                        });
+
+                        mp[0] = p;
+                        p.prepareAsync();
+                    } catch (Exception ex) {
+                        Log.e(TAG, "Audio play failed", ex);
+                        Toast.makeText(this, "Audio error", Toast.LENGTH_SHORT).show();
+                        playAudio.setText("Play audio");
+                    }
+                }));
+            });
         } else {
             playAudio.setVisibility(View.GONE);
         }
@@ -1190,50 +1156,88 @@ public class GeospatialActivity extends AppCompatActivity
         builder.setPositiveButton("Close", (d, w) -> {
             try { if (mp[0] != null) { mp[0].stop(); mp[0].release(); mp[0] = null; } } catch (Exception ignore) {}
         });
+
         builder.setOnDismissListener(d -> {
             try { if (mp[0] != null) { mp[0].stop(); mp[0].release(); mp[0] = null; } } catch (Exception ignore) {}
         });
+
         builder.show();
     }
 
-//    private void showQuizDialog(EggEntry egg) {
-////        String question = (egg.quizQuestion != null && !egg.quizQuestion.isEmpty())
-////                ? egg.quizQuestion
-////                : "Answer this to unlock hidden content:"; // default fallback
-////        String correctAnswer = (egg.quizAnswer != null) ? egg.quizAnswer.trim() : "";
-//
-//        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-//        builder.setTitle("Quiz Time!");
-//        builder.setMessage(question);
-//
-//        final EditText input = new EditText(this);
-//        input.setInputType(InputType.TYPE_CLASS_TEXT);
-//        builder.setView(input);
-//
-//        builder.setPositiveButton("Submit", null);
-//
-//        AlertDialog dialog = builder.create();
-//        dialog.setOnShowListener(d -> {
-//            Button btn = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-//            btn.setOnClickListener(v -> {
-//                String userAnswer = input.getText().toString().trim();
-//                if (userAnswer.equalsIgnoreCase(correctAnswer)) {
-//                    dialog.dismiss();
-//                    showEggDialog(egg);
-//                } else {
-//                    input.setError("Incorrect! Try again or use the hint.");
-//                }
-//            });
-//        });
-//
-//        dialog.show();
-//    }
+    private void showEggOrQuiz(EggEntry egg) {
+        if (egg != null && egg.hasQuiz()) {
+            // (Optional) random question: pick one at random
+            EggEntry.QuizQuestion q = egg.quiz.get((int)(Math.random() * egg.quiz.size()));
+            showQuizDialog(q, () -> showEggDialog(egg));
+        } else {
+            showEggDialog(egg);
+        }
+    }
+
+    private void showQuizDialog(EggEntry.QuizQuestion q, Runnable onPassed) {
+        if (q == null || q.options == null || q.options.isEmpty()) {
+            if (onPassed != null) onPassed.run();
+            return;
+        }
+
+        final String question = (q.q != null && !q.q.isEmpty()) ? q.q : "Answer the question";
+        final CharSequence[] items = q.options.toArray(new CharSequence[0]);
+        final int correctIndex = (q.answer != null) ? q.answer.intValue() : 0;
+        final int[] chosen = {-1};
+
+        // ---- custom multi-line title (no ellipsis) ----
+        android.widget.LinearLayout header = new android.widget.LinearLayout(this);
+        header.setOrientation(android.widget.LinearLayout.VERTICAL);
+        int pad = dp(16);
+        header.setPadding(pad, pad, pad, pad);
+
+        android.widget.TextView titleTv = new android.widget.TextView(this);
+        titleTv.setText("Quick quiz to unlock");
+        titleTv.setTextSize(18f);
+        titleTv.setTypeface(titleTv.getTypeface(), android.graphics.Typeface.BOLD);
+
+        android.widget.TextView questionTv = new android.widget.TextView(this);
+        questionTv.setText(question);
+        questionTv.setTextSize(16f);
+        questionTv.setPadding(0, dp(6), 0, 0);
+        questionTv.setLineSpacing(0f, 1.1f);   // nicer spacing
+        // (no ellipsize; wraps across lines)
+
+        header.addView(titleTv);
+        header.addView(questionTv);
+        // -----------------------------------------------
+
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setCustomTitle(header)                 // use our multi-line header
+                .setSingleChoiceItems(items, -1, (dlg, which) -> chosen[0] = which) // show options
+                .setPositiveButton("Submit", (dlg, w) -> {
+                    if (chosen[0] == -1) {
+                        android.widget.Toast.makeText(this, "Please pick an answer.", android.widget.Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    if (chosen[0] == correctIndex) {
+                        android.widget.Toast.makeText(this, "Correct! Unlocked.", android.widget.Toast.LENGTH_SHORT).show();
+                        if (onPassed != null) onPassed.run();
+                    } else {
+                        android.widget.Toast.makeText(this, "Not quite. Try again.", android.widget.Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private int dp(int d) {
+        return Math.round(d * getResources().getDisplayMetrics().density);
+    }
 
 
 
-    // ---------- helpers ----------
+
+
+
+
+
+
 
     private void toast(String s) { runOnUiThread(() -> Toast.makeText(this, s, Toast.LENGTH_SHORT).show()); }
-
-    // ---------- EOF ----------
 }
