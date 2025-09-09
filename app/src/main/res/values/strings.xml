@@ -19,6 +19,8 @@
   <string name="arcore_api_key">AIzaSyCTKfPYnVPRdR_NXhmTjt1iCYi4jJBOQ4A</string>
   <string translatable="false" name="button_text_set_anchor">ANCHOR SETTING</string>
   <string translatable="false" name="switch_render_streetscaope_geometry">SHOW GEOMETRY</string>
+  <string name="egg_image_desc">Egg image</string>
+
   <string translatable="false" name="button_text_clear_anchors">CLEAR ALL ANCHORS</string>
   <string translatable="false" name="tap_screen_text">TAP ON SCREEN TO CREATE ANCHOR</string>
   <string translatable="false" name="status_unsupported">This device does not support the Geospatial API.</string>

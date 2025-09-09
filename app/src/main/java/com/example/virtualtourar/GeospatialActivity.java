@@ -40,6 +40,7 @@ import androidx.core.content.ContextCompat;
 import androidx.fragment.app.DialogFragment;
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.example.virtualtourar.data.EggEntry;
 import com.example.virtualtourar.data.EggRepository;
 import com.example.virtualtourar.geofence.GeofenceManager;
@@ -74,6 +75,7 @@ import com.google.ar.core.exceptions.SessionPausedException;
 import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException;
 import com.google.ar.core.exceptions.UnavailableDeviceNotCompatibleException;
 import com.google.ar.core.exceptions.UnsupportedConfigurationException;
+import com.google.firebase.Timestamp;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.storage.FirebaseStorage;
 import com.google.firebase.storage.StorageReference;
@@ -88,10 +90,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-import com.bumptech.glide.load.engine.DiskCacheStrategy;
-import android.media.AudioAttributes;
-
-/** Geospatial viewer (SampleRender): shows OBJ egg at exact saved WGS84 (lat/lng/alt or terrain). */
+/** Geospatial viewer (SampleRender): now supports Cloud Anchor resolution + Geo/Terrain anchors. */
 public class GeospatialActivity extends AppCompatActivity
         implements SampleRender.Renderer, PrivacyNoticeDialogFragment.NoticeDialogListener {
 
@@ -104,12 +103,12 @@ public class GeospatialActivity extends AppCompatActivity
     // Model
     private static final String EGG_MODEL    = "models/egg_2.obj";
     private static final String EGG_TEXTURE  = "models/egg_2_colour.jpg";
-    private static final float  EGG_SCALE    = 0.01f;
-    private static final float  MODEL_LIFT_M = 0.05f; // tiny lift to avoid ground clipping
+    private static final float  EGG_SCALE    = 0.002f;
+    private static final float  MODEL_LIFT_M = 0.01f; // tiny lift; avoids “floating” look
 
-    // Placement gating
-    private static final double MAX_H_ACC_TO_PLACE = 60.0; // meters
-    private static final double MAX_V_ACC_TO_PLACE = 40.0; // meters
+    // Geospatial placement gating
+    private static final double MAX_H_ACC_TO_PLACE = 100.0; // meters prev :60
+    private static final double MAX_V_ACC_TO_PLACE = 80.0; // meters  prev: 40
     private static final double ALT_GLOBAL_OFFSET_M = 0.0;
 
     // Tap picking thresholds
@@ -152,6 +151,10 @@ public class GeospatialActivity extends AppCompatActivity
     @GuardedBy("anchorsLock") private final Map<Anchor, EggEntry> anchorToEgg = new HashMap<>();
     @GuardedBy("anchorsLock") private final HashSet<String>       placedIds   = new HashSet<>();
 
+    // PENDING Cloud resolutions (id -> pending record)
+    private static class PendingCloud { final Anchor a; final EggEntry e; PendingCloud(Anchor a, EggEntry e){ this.a=a; this.e=e; } }
+    private final Map<String, PendingCloud> pendingCloudByEggId = new HashMap<>();
+
     // Data
     private EggRepository repository;
     private final List<EggEntry> eggs = new ArrayList<>();
@@ -177,25 +180,24 @@ public class GeospatialActivity extends AppCompatActivity
     private SharedPreferences sharedPreferences;
     private boolean installRequested;
 
-    // Backoff for placement attempts
+    // Backoff for placement attempts (geo)
     private final Map<String, Long> anchorAttemptAtMs = new HashMap<>();
     private static final long ANCHOR_RETRY_MS = 30_000L;
 
-    // Optional micro-stabilizer (translation only)
+    // Optional micro-stabilizer
     private static final float SMOOTHING_ALPHA = 0.65f;
     private final Map<String, float[]> lastStableT = new HashMap<>();
 
     // Nearby notification gating
     private final Set<String> nearbyNotified = new HashSet<>();
 
-    private static final int REQUEST_CODE = 700;          // for POST_NOTIFICATIONS
+    private static final int REQUEST_CODE = 700;
     private static final int REQUEST_BACKGROUND_LOCATION = 701;
 
     // ---------- lifecycle ----------
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // activity_main must contain @id/surfaceview and @id/status_text_view
         setContentView(R.layout.activity_main);
 
         sharedPreferences = getSharedPreferences("GeospatialActivity", Context.MODE_PRIVATE);
@@ -216,27 +218,19 @@ public class GeospatialActivity extends AppCompatActivity
             Log.w(TAG, "FirebaseAuth init skipped", t);
         }
 
-        // Gesturessss
         gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onSingleTapUp(MotionEvent e) {
                 synchronized (singleTapLock) {
                     if (queuedSingleTap != null) queuedSingleTap.recycle();
-                    queuedSingleTap = MotionEvent.obtain(e); // clone; don't keep recycled instance
+                    queuedSingleTap = MotionEvent.obtain(e);
                 }
                 return true;
             }
             @Override public boolean onDown(MotionEvent e) { return true; }
         });
         gestureDetector.setIsLongpressEnabled(false);
+        surfaceView.setOnTouchListener((v, ev) -> { gestureDetector.onTouchEvent(ev); return true; });
 
-// Always consume the touch so nothing else steals it
-        surfaceView.setOnTouchListener((v, ev) -> {
-            gestureDetector.onTouchEvent(ev);
-            return true;
-        });
-
-
-        // Fetch eggs
         repository = new EggRepository();
         repository.fetchAllEggs()
                 .addOnSuccessListener(list -> {
@@ -245,6 +239,7 @@ public class GeospatialActivity extends AppCompatActivity
                     prewarmAssets(list);
                     placedIds.clear();
                     nearbyNotified.clear();
+                    pendingCloudByEggId.clear();
                     Log.d(TAG, "Fetched eggs: " + eggs.size());
                     toast("Eggs fetched: " + eggs.size());
                     new GeofenceManager(this).registerForEggs(list);
@@ -274,7 +269,6 @@ public class GeospatialActivity extends AppCompatActivity
             if (dlg != null) dlg.show();
         }
 
-        // Deep-link: open egg details if requested
         String openId = getIntent() != null ? getIntent().getStringExtra("openEggId") : null;
         if (openId != null) {
             EggEntry toOpen = null;
@@ -415,6 +409,7 @@ public class GeospatialActivity extends AppCompatActivity
             }
             Config config = session.getConfig();
             config.setGeospatialMode(Config.GeospatialMode.ENABLED);
+            config.setCloudAnchorMode(Config.CloudAnchorMode.ENABLED); // needed for resolve
             try { config.setFocusMode(Config.FocusMode.AUTO); } catch (Throwable ignore) {}
             session.configure(config);
             session.resume();
@@ -512,9 +507,7 @@ public class GeospatialActivity extends AppCompatActivity
             if (backgroundRenderer.getCameraColorTexture() != null) {
                 session.setCameraTextureNames(new int[]{backgroundRenderer.getCameraColorTexture().getTextureId()});
                 hasSetTextureNames = true;
-            } else {
-                return;
-            }
+            } else { return; }
         }
 
         displayRotationHelper.updateSessionIfNeeded(session);
@@ -546,33 +539,33 @@ public class GeospatialActivity extends AppCompatActivity
         Earth earth = session.getEarth();
         if (earth == null || earth.getEarthState() != Earth.EarthState.ENABLED) {
             updateEarthStatus(null, null, "Earth: NOT ENABLED (check API key/Cloud)");
-            return;
         }
-        if (earth.getTrackingState() != TrackingState.TRACKING) {
+
+        GeospatialPose camPose = null;
+        if (earth != null && earth.getTrackingState() == TrackingState.TRACKING) {
+            try { camPose = earth.getCameraGeospatialPose(); } catch (SecurityException ignored) {}
+            updateEarthStatus(earth, camPose, null);
+        } else if (earth != null) {
             updateEarthStatus(earth, null, "Earth: LOCALIZING… walk and look around");
-            return;
         }
 
-        GeospatialPose camPose;
-        try {
-            camPose = earth.getCameraGeospatialPose();
-        } catch (SecurityException se) {
-            updateEarthStatus(earth, null, "Earth: tracking, but location permission missing");
-            return;
-        }
-        updateEarthStatus(earth, camPose, null);
+        // 1) Always resolve Cloud anchors (no GPS accuracy gating).
+        try { attemptResolveCloudAnchors(); } catch (Throwable t) { Log.w(TAG, "Cloud resolve loop failed", t); }
 
-        double hAcc = camPose.getHorizontalAccuracy();
-        double vAcc = Double.isNaN(camPose.getVerticalAccuracy()) ? 999 : camPose.getVerticalAccuracy();
-        if (hAcc <= MAX_H_ACC_TO_PLACE && vAcc <= MAX_V_ACC_TO_PLACE) {
-            placeEggAnchorsExactly(earth, camPose);
-            checkNearbyNudges(camPose);
+        // 2) Place GEOSPATIAL/TERRAIN anchors once accuracy is reasonable.
+        if (earth != null && camPose != null) {
+            double hAcc = camPose.getHorizontalAccuracy();
+            double vAcc = Double.isNaN(camPose.getVerticalAccuracy()) ? 999 : camPose.getVerticalAccuracy();
+            if (hAcc <= MAX_H_ACC_TO_PLACE && vAcc <= MAX_V_ACC_TO_PLACE) {
+                placeGeoAnchorsExactly(earth, camPose);
+                checkNearbyNudges(camPose);
+            }
         }
 
-        // Taps
+        // 3) Taps
         try { handleTap(frame); } catch (Throwable t) { Log.w(TAG, "handleTap failed", t); }
 
-        // Draw eggs
+        // 4) Draw eggs
         camera.getProjectionMatrix(projMatrix, 0, Z_NEAR, Z_FAR);
         camera.getViewMatrix(viewMatrix, 0);
 
@@ -584,7 +577,7 @@ public class GeospatialActivity extends AppCompatActivity
 
                 Pose p = a.getPose();
 
-                // Optional micro-stabilize translation (no rotation change)
+                // Optional micro-stabilize translation
                 float[] t = p.getTranslation();
                 float[] last = lastStableT.get(entry.getValue().id);
                 if (last != null && SMOOTHING_ALPHA < 1f) {
@@ -597,12 +590,11 @@ public class GeospatialActivity extends AppCompatActivity
 
                 p.toMatrix(modelMatrix, 0);
 
-                // OBJ is Z-up → rotate −90° about X to Y-up
+                // OBJ Z-up → Y-up
                 float[] Rx = new float[16];
                 Matrix.setRotateM(Rx, 0, -90f, 1f, 0f, 0f);
                 Matrix.multiplyMM(modelMatrix, 0, modelMatrix, 0, Rx, 0);
 
-                // small lift & scale
                 Matrix.translateM(modelMatrix, 0, 0f, MODEL_LIFT_M, 0f);
                 float[] S = new float[16];
                 Matrix.setIdentityM(S, 0);
@@ -651,16 +643,92 @@ public class GeospatialActivity extends AppCompatActivity
         runOnUiThread(() -> { statusText.setText(msg); statusText.setVisibility(View.VISIBLE); });
     }
 
-    // ---------- exact anchor placement ----------
+    // ---------- CLOUD: resolve & track ----------
 
-    private void placeEggAnchorsExactly(Earth earth, GeospatialPose currentPose) {
-        if (eggs.isEmpty()) return;
+    private void attemptResolveCloudAnchors() {
+        if (eggs.isEmpty() || session == null) return;
+        Log.d(TAG, "Attempting to resolve cloud anchors. Total eggs: " + eggs.size());
+
+        // Kick off resolves for eggs that want CLOUD and aren't already pending/placed.
+        for (EggEntry e : eggs) {
+            Log.d(TAG, "Egg " + e.id + ": anchorType=" + e.anchorType + ", cloudId=" + e.cloudId);
+            if (e == null || e.id == null) continue;
+            if (placedIds.contains(e.id)) continue;
+            if (pendingCloudByEggId.containsKey(e.id)) continue;
+
+            if ("CLOUD".equalsIgnoreCase(safe(e.anchorType))
+                    && e.cloudId != null && !e.cloudId.trim().isEmpty()) {
+                if (isLikelyExpired(e.cloudHostedAt, e.cloudTtlDays)) {
+                    Log.w(TAG, "Cloud anchor likely expired for " + e.id + " — skipping resolve, will fallback to GEO if available.");
+                    continue;
+                }
+                try {
+                    Anchor resolving = session.resolveCloudAnchor(e.cloudId.trim());
+                    pendingCloudByEggId.put(e.id, new PendingCloud(resolving, e));
+                    Log.d(TAG, "Resolving Cloud Anchor for " + e.id);
+                } catch (Throwable t) {
+                    Log.w(TAG, "resolveCloudAnchor failed for " + e.id, t);
+                }
+            }
+        }
+
+        // Poll states for all pending resolutions
+        List<String> done = new ArrayList<>();
+        for (Map.Entry<String, PendingCloud> kv : pendingCloudByEggId.entrySet()) {
+            String eggId = kv.getKey();
+            PendingCloud pc = kv.getValue();
+            Anchor a = pc.a;
+
+            Anchor.CloudAnchorState st = a.getCloudAnchorState();
+            switch (st) {
+                case SUCCESS:
+                    synchronized (anchorsLock) {
+                        anchorToEgg.put(a, pc.e);
+                        placedIds.add(eggId);
+                    }
+                    done.add(eggId);
+                    Log.d(TAG, "Cloud resolve SUCCESS for " + eggId);
+                    break;
+                case NONE:
+                case TASK_IN_PROGRESS:
+                    // still resolving
+                    break;
+                default:
+                    // Some error — detach and fall back (if GEO available)
+                    Log.w(TAG, "Cloud resolve error " + st + " for " + eggId);
+                    try { a.detach(); } catch (Throwable ignore) {}
+                    done.add(eggId);
+                    break;
+            }
+        }
+        for (String id : done) pendingCloudByEggId.remove(id);
+    }
+
+    private static boolean isLikelyExpired(@Nullable Timestamp hostedAt, @Nullable Long ttlDays) {
+        if (hostedAt == null || ttlDays == null) return false;
+        long start = hostedAt.toDate().getTime();
+        long ttlMs = ttlDays * 24L * 60L * 60L * 1000L;
+        return System.currentTimeMillis() > (start + ttlMs);
+    }
+
+    // ---------- GEO: exact/terrain anchor placement ----------
+
+    private void placeGeoAnchorsExactly(@Nullable Earth earth, @Nullable GeospatialPose currentPose) {
+        Log.d(TAG, "Placing geo anchors. Accuracy: H=" + currentPose.getHorizontalAccuracy() +
+                ", V=" + currentPose.getVerticalAccuracy());
+        if (earth == null || currentPose == null || eggs.isEmpty()) return;
 
         final long now = System.currentTimeMillis();
 
         for (EggEntry e : eggs) {
-            if (e == null || e.id == null || e.geo == null) continue;
+            if (e == null || e.id == null) continue;
             if (placedIds.contains(e.id)) continue;
+
+            // Skip eggs that demand CLOUD (we resolve them separately)
+            if ("CLOUD".equalsIgnoreCase(safe(e.anchorType))) continue;
+
+            // Need geospatial coordinates
+            if (e.geo == null) continue;
 
             Long last = anchorAttemptAtMs.get(e.id);
             if (last != null && (now - last) < ANCHOR_RETRY_MS) continue;
@@ -681,41 +749,23 @@ public class GeospatialActivity extends AppCompatActivity
                     }
                     Log.d(TAG, "Placed GEOSPATIAL exact-alt for " + e.id);
                 } else {
-                    try {
-                        earth.resolveAnchorOnTerrainAsync(
-                                lat, lng,
-                                (float) (currentPose.getAltitude() + ALT_GLOBAL_OFFSET_M),
-                                q[0], q[1], q[2], q[3],
-                                (anchor, state) -> {
-                                    if (state == Anchor.TerrainAnchorState.SUCCESS) {
-                                        synchronized (anchorsLock) {
-                                            anchorToEgg.put(anchor, e);
-                                            placedIds.add(e.id);
-                                        }
-                                        Log.d(TAG, "Placed TERRAIN for " + e.id);
-                                    } else {
-                                        try {
-                                            double alt = currentPose.getAltitude() + ALT_GLOBAL_OFFSET_M;
-                                            Anchor geo = earth.createAnchor(lat, lng, alt, q[0], q[1], q[2], q[3]);
-                                            synchronized (anchorsLock) {
-                                                anchorToEgg.put(geo, e);
-                                                placedIds.add(e.id);
-                                            }
-                                            Log.w(TAG, "Terrain " + state + "; used GEOSPATIAL(cam alt) for " + e.id);
-                                        } catch (Throwable t2) {
-                                            Log.w(TAG, "Geospatial fallback failed for " + e.id, t2);
-                                        }
+                    // Try terrain (good outdoors). If not success, DO NOT fall back to camera-alt (prevents floating).
+                    earth.resolveAnchorOnTerrainAsync(
+                            lat, lng,
+                            (float) (currentPose.getAltitude() + ALT_GLOBAL_OFFSET_M),
+                            q[0], q[1], q[2], q[3],
+                            (anchor, state) -> {
+                                if (state == Anchor.TerrainAnchorState.SUCCESS) {
+                                    synchronized (anchorsLock) {
+                                        anchorToEgg.put(anchor, e);
+                                        placedIds.add(e.id);
                                     }
-                                });
-                    } catch (Throwable callShapeDiffers) {
-                        double alt = currentPose.getAltitude() + ALT_GLOBAL_OFFSET_M;
-                        Anchor geo = earth.createAnchor(lat, lng, alt, q[0], q[1], q[2], q[3]);
-                        synchronized (anchorsLock) {
-                            anchorToEgg.put(geo, e);
-                            placedIds.add(e.id);
-                        }
-                        Log.w(TAG, "resolveAnchorOnTerrainAsync mismatch; used GEOSPATIAL(cam alt) for " + e.id);
-                    }
+                                    Log.d(TAG, "Placed TERRAIN for " + e.id);
+                                } else {
+                                    Log.w(TAG, "Terrain " + state + " for " + e.id + "; skipping camera-alt fallback to avoid float.");
+                                    // We’ll try again later when Earth improves.
+                                }
+                            });
                 }
             } catch (Throwable t) {
                 Log.w(TAG, "Anchor create failed for " + e.id, t);
@@ -881,10 +931,9 @@ public class GeospatialActivity extends AppCompatActivity
                 if (img.startsWith("http")) {
                     Uri uri = Uri.parse(img);
                     imageUrlCache.put(e.id, uri);
-                    // Warm Glide's disk cache so dialogs are instant even on shaky networks
                     Glide.with(getApplicationContext())
                             .load(uri).diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                            .timeout(20_000) // 20s
+                            .timeout(20_000)
                             .preload();
                 } else {
                     try {
@@ -954,7 +1003,6 @@ public class GeospatialActivity extends AppCompatActivity
             return;
         }
 
-        // gs:// or bucket path → resolve then Glide (unchanged, add timeout + cache)
         try {
             StorageReference ref = s.startsWith("gs://")
                     ? FirebaseStorage.getInstance().getReferenceFromUrl(s)
@@ -977,7 +1025,6 @@ public class GeospatialActivity extends AppCompatActivity
             target.setImageResource(android.R.color.transparent);
         }
     }
-
 
     private interface UriCallback { void accept(Uri uri); }
 
@@ -1013,7 +1060,6 @@ public class GeospatialActivity extends AppCompatActivity
                     })
                     .addOnFailureListener(err -> {
                         Log.w(TAG, "Audio URL resolve failed: " + s, err);
-                        // optional tiny retry after 1s (helps right after auth)
                         new android.os.Handler(getMainLooper()).postDelayed(() ->
                                         ref.getDownloadUrl()
                                                 .addOnSuccessListener(uri -> {
@@ -1029,8 +1075,9 @@ public class GeospatialActivity extends AppCompatActivity
         }
     }
 
-
     // ---------- utils ----------
+
+    private static String safe(@Nullable String s){ return s == null ? "" : s; }
 
     /** heading (deg cw from North) → quaternion about +Y in EUS. */
     private static float[] yawToQuaternion(float yawDeg) {
@@ -1073,7 +1120,6 @@ public class GeospatialActivity extends AppCompatActivity
         }
     }
 
-    // Requires: import android.media.AudioAttributes;
     private void showEggDialog(EggEntry egg) {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         View v = getLayoutInflater().inflate(R.layout.dialog_egg, null);
@@ -1081,92 +1127,221 @@ public class GeospatialActivity extends AppCompatActivity
 
         TextView title   = v.findViewById(R.id.eggTitle);
         TextView desc    = v.findViewById(R.id.eggDesc);
-        ImageView photo  = v.findViewById(R.id.eggPhoto);
-        Button playAudio = v.findViewById(R.id.playAudio);
+        View audioSec    = v.findViewById(R.id.audioSection);
+        com.google.android.material.button.MaterialButton btnViewImage = v.findViewById(R.id.btnViewImage);
+        com.google.android.material.button.MaterialButton btnPlayPause = v.findViewById(R.id.btnPlayPause);
+        android.widget.ProgressBar audioLoading = v.findViewById(R.id.audioLoading);
+        android.widget.SeekBar seek = v.findViewById(R.id.seekAudio);
+        TextView txtElapsed = v.findViewById(R.id.txtElapsed);
+        TextView txtDuration = v.findViewById(R.id.txtDuration);
 
         title.setText(egg.title != null && !egg.title.isEmpty() ? egg.title : "Egg");
         desc.setText(egg.description != null ? egg.description : "");
 
+        // ---- Image: show "View image" only if present ----
         String img = (egg.cardImageUrl != null && !egg.cardImageUrl.isEmpty())
                 ? egg.cardImageUrl
                 : (egg.photoPaths != null && !egg.photoPaths.isEmpty() ? egg.photoPaths.get(0) : null);
-        loadIntoImageView(img, photo, egg.id);
 
+        final Uri[] imageToShow = { null };
+
+        if (img != null && !img.trim().isEmpty()) {
+            btnViewImage.setVisibility(View.VISIBLE);
+
+            // Try cache first
+            Uri cached = (egg.id != null) ? imageUrlCache.get(egg.id) : null;
+            if (cached != null) {
+                imageToShow[0] = cached;
+            } else {
+                // Resolve (supports http, gs://, or storage path)
+                String s = normalizeUrlOrPath(img);
+                if (s != null) {
+                    if (s.startsWith("http")) {
+                        imageToShow[0] = Uri.parse(s);
+                    } else {
+                        try {
+                            com.google.firebase.storage.StorageReference ref = s.startsWith("gs://")
+                                    ? com.google.firebase.storage.FirebaseStorage.getInstance().getReferenceFromUrl(s)
+                                    : com.google.firebase.storage.FirebaseStorage.getInstance().getReference().child(s);
+                            ref.getDownloadUrl().addOnSuccessListener(uri -> {
+                                if (egg.id != null) imageUrlCache.put(egg.id, uri);
+                                imageToShow[0] = uri;
+                            });
+                        } catch (Throwable ignore) {}
+                    }
+                }
+            }
+
+            btnViewImage.setOnClickListener(vw -> {
+                if (imageToShow[0] != null) {
+                    ImageViewerDialogFragment.newInstance(imageToShow[0])
+                            .show(getSupportFragmentManager(), "image_viewer");
+                } else {
+                    Toast.makeText(this, "Loading image…", Toast.LENGTH_SHORT).show();
+                    // Best effort resolve again if not ready
+                    String s2 = normalizeUrlOrPath(img);
+                    if (s2 != null) {
+                        if (s2.startsWith("http")) {
+                            imageToShow[0] = Uri.parse(s2);
+                            ImageViewerDialogFragment.newInstance(imageToShow[0])
+                                    .show(getSupportFragmentManager(), "image_viewer");
+                        } else {
+                            try {
+                                com.google.firebase.storage.StorageReference ref = s2.startsWith("gs://")
+                                        ? com.google.firebase.storage.FirebaseStorage.getInstance().getReferenceFromUrl(s2)
+                                        : com.google.firebase.storage.FirebaseStorage.getInstance().getReference().child(s2);
+                                ref.getDownloadUrl().addOnSuccessListener(uri -> {
+                                    if (egg.id != null) imageUrlCache.put(egg.id, uri);
+                                    imageToShow[0] = uri;
+                                    ImageViewerDialogFragment.newInstance(uri)
+                                            .show(getSupportFragmentManager(), "image_viewer");
+                                }).addOnFailureListener(err ->
+                                        Toast.makeText(this, "Image unavailable", Toast.LENGTH_SHORT).show());
+                            } catch (Throwable t) {
+                                Toast.makeText(this, "Image unavailable", Toast.LENGTH_SHORT).show();
+                            }
+                        }
+                    }
+                }
+            });
+        } else {
+            btnViewImage.setVisibility(View.GONE);
+        }
+
+        // ---- Audio ----
         String audio = (egg.audioUrl != null && !egg.audioUrl.isEmpty()) ? egg.audioUrl : egg.audioPath;
-
         final MediaPlayer[] mp = new MediaPlayer[1];
+        final boolean[] userSeeking = { false };
+        final android.os.Handler handler = new android.os.Handler(getMainLooper());
+
+        Runnable tick = new Runnable() {
+            @Override public void run() {
+                if (mp[0] != null && mp[0].isPlaying() && !userSeeking[0]) {
+                    int pos = mp[0].getCurrentPosition();
+                    int dur = mp[0].getDuration();
+                    seek.setProgress(dur > 0 ? (int) (1000L * pos / Math.max(dur,1)) : 0);
+                    txtElapsed.setText(fmtTime(pos));
+                    txtDuration.setText(fmtTime(dur));
+                    handler.postDelayed(this, 500);
+                }
+            }
+        };
 
         if (audio != null && !audio.isEmpty()) {
-            playAudio.setVisibility(View.VISIBLE);
-            playAudio.setText("Play audio");
+            audioSec.setVisibility(View.VISIBLE);
+            btnPlayPause.setText("Play");
+            btnPlayPause.setIconResource(R.drawable.ic_outline_play_arrow_24);
 
-            playAudio.setOnClickListener(v1 -> {
-                // Toggle: if already playing, stop.
-                if (mp[0] != null) {
-                    try { mp[0].stop(); mp[0].release(); } catch (Exception ignore) {}
-                    mp[0] = null;
-                    playAudio.setText("Play audio");
+            // Seekbar interactions
+            seek.setMax(1000);
+            seek.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(android.widget.SeekBar sb, int progress, boolean fromUser) {
+                    if (fromUser && mp[0] != null) {
+                        int dur = mp[0].getDuration();
+                        int newPos = (int) ((progress / 1000f) * dur);
+                        txtElapsed.setText(fmtTime(newPos));
+                    }
+                }
+                @Override public void onStartTrackingTouch(android.widget.SeekBar sb) { userSeeking[0] = true; }
+                @Override public void onStopTrackingTouch(android.widget.SeekBar sb) {
+                    if (mp[0] != null) {
+                        int dur = mp[0].getDuration();
+                        int newPos = (int) ((sb.getProgress() / 1000f) * dur);
+                        mp[0].seekTo(newPos);
+                    }
+                    userSeeking[0] = false;
+                }
+            });
+
+            btnPlayPause.setOnClickListener(vv -> {
+                if (mp[0] != null && mp[0].isPlaying()) {
+                    try { mp[0].pause(); } catch (Exception ignore) {}
+                    btnPlayPause.setText("Play");
+                    btnPlayPause.setIconResource(R.drawable.ic_outline_play_arrow_24);
                     return;
                 }
 
-                playAudio.setText("Loading…");
+                if (mp[0] != null) {
+                    try { mp[0].start(); } catch (Exception ignore) {}
+                    btnPlayPause.setText("Pause");
+                    btnPlayPause.setIconResource(R.drawable.ic_outline_pause_24);
+                    handler.post(tick);
+                    return;
+                }
+
+                // First time: resolve + prepare
+                audioLoading.setVisibility(View.VISIBLE);
+                btnPlayPause.setEnabled(false);
 
                 resolveToStreamUri(audio, egg.id, uri -> runOnUiThread(() -> {
                     try {
                         MediaPlayer p = new MediaPlayer();
                         if (Build.VERSION.SDK_INT >= 21) {
-                            p.setAudioAttributes(new AudioAttributes.Builder()
-                                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                            p.setAudioAttributes(new android.media.AudioAttributes.Builder()
+                                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
                                     .build());
                         }
                         p.setDataSource(this, uri);
-
                         p.setOnPreparedListener(player -> {
+                            audioLoading.setVisibility(View.GONE);
+                            btnPlayPause.setEnabled(true);
+                            txtDuration.setText(fmtTime(player.getDuration()));
                             player.start();
-                            playAudio.setText("Stop");
+                            btnPlayPause.setText("Pause");
+                            btnPlayPause.setIconResource(R.drawable.ic_outline_pause_24);
+                            handler.post(tick);
                         });
                         p.setOnCompletionListener(player -> {
-                            try { player.release(); } catch (Exception ignore) {}
-                            mp[0] = null;
-                            playAudio.setText("Play audio");
+                            try { player.seekTo(0); } catch (Exception ignore) {}
+                            seek.setProgress(0);
+                            txtElapsed.setText("0:00");
+                            btnPlayPause.setText("Play");
+                            btnPlayPause.setIconResource(R.drawable.ic_outline_play_arrow_24);
                         });
                         p.setOnErrorListener((player, what, extra) -> {
-                            Log.e(TAG, "MediaPlayer error what=" + what + " extra=" + extra);
                             Toast.makeText(this, "Audio error", Toast.LENGTH_SHORT).show();
-                            try { player.release(); } catch (Exception ignore) {}
-                            mp[0] = null;
-                            playAudio.setText("Play audio");
+                            audioLoading.setVisibility(View.GONE);
+                            btnPlayPause.setEnabled(true);
                             return true;
                         });
-
                         mp[0] = p;
                         p.prepareAsync();
                     } catch (Exception ex) {
-                        Log.e(TAG, "Audio play failed", ex);
                         Toast.makeText(this, "Audio error", Toast.LENGTH_SHORT).show();
-                        playAudio.setText("Play audio");
+                        audioLoading.setVisibility(View.GONE);
+                        btnPlayPause.setEnabled(true);
                     }
                 }));
             });
         } else {
-            playAudio.setVisibility(View.GONE);
+            audioSec.setVisibility(View.GONE);
         }
 
         builder.setPositiveButton("Close", (d, w) -> {
             try { if (mp[0] != null) { mp[0].stop(); mp[0].release(); mp[0] = null; } } catch (Exception ignore) {}
+            handler.removeCallbacksAndMessages(null);
         });
 
         builder.setOnDismissListener(d -> {
             try { if (mp[0] != null) { mp[0].stop(); mp[0].release(); mp[0] = null; } } catch (Exception ignore) {}
+            handler.removeCallbacksAndMessages(null);
         });
 
         builder.show();
     }
 
+    private static String fmtTime(int ms) {
+        if (ms < 0) ms = 0;
+        int totalSec = ms / 1000;
+        int m = totalSec / 60;
+        int s = totalSec % 60;
+        return m + ":" + (s < 10 ? "0" + s : String.valueOf(s));
+    }
+
+
     private void showEggOrQuiz(EggEntry egg) {
         if (egg != null && egg.hasQuiz()) {
-            // (Optional) random question: pick one at random
             EggEntry.QuizQuestion q = egg.quiz.get((int)(Math.random() * egg.quiz.size()));
             showQuizDialog(q, () -> showEggDialog(egg));
         } else {
@@ -1185,7 +1360,6 @@ public class GeospatialActivity extends AppCompatActivity
         final int correctIndex = (q.answer != null) ? q.answer.intValue() : 0;
         final int[] chosen = {-1};
 
-        // ---- custom multi-line title (no ellipsis) ----
         android.widget.LinearLayout header = new android.widget.LinearLayout(this);
         header.setOrientation(android.widget.LinearLayout.VERTICAL);
         int pad = dp(16);
@@ -1200,16 +1374,14 @@ public class GeospatialActivity extends AppCompatActivity
         questionTv.setText(question);
         questionTv.setTextSize(16f);
         questionTv.setPadding(0, dp(6), 0, 0);
-        questionTv.setLineSpacing(0f, 1.1f);   // nicer spacing
-        // (no ellipsize; wraps across lines)
+        questionTv.setLineSpacing(0f, 1.1f);
 
         header.addView(titleTv);
         header.addView(questionTv);
-        // -----------------------------------------------
 
         new androidx.appcompat.app.AlertDialog.Builder(this)
-                .setCustomTitle(header)                 // use our multi-line header
-                .setSingleChoiceItems(items, -1, (dlg, which) -> chosen[0] = which) // show options
+                .setCustomTitle(header)
+                .setSingleChoiceItems(items, -1, (dlg, which) -> chosen[0] = which)
                 .setPositiveButton("Submit", (dlg, w) -> {
                     if (chosen[0] == -1) {
                         android.widget.Toast.makeText(this, "Please pick an answer.", android.widget.Toast.LENGTH_SHORT).show();
@@ -1229,15 +1401,6 @@ public class GeospatialActivity extends AppCompatActivity
     private int dp(int d) {
         return Math.round(d * getResources().getDisplayMetrics().density);
     }
-
-
-
-
-
-
-
-
-
 
     private void toast(String s) { runOnUiThread(() -> Toast.makeText(this, s, Toast.LENGTH_SHORT).show()); }
 }

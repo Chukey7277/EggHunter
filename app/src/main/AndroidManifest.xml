@@ -63,8 +63,8 @@
 
     <!-- Launcher activity -->
     <activity
-        android:name=".SplashActivity"
-        android:theme="@style/Theme.AppCompat.Light.NoActionBar"
+        android:name=".HomeActivity"
+        android:theme="@style/AppTheme"
         android:exported="true">
       <intent-filter>
         <action android:name="android.intent.action.MAIN" />
@@ -72,8 +72,8 @@
       </intent-filter>
     </activity>
 
+
     <!-- Other activities -->
-    <activity android:name=".HomeActivity" />
     <activity android:name=".GeospatialActivity" />
     <activity android:name=".CollectiblesActivity" />
 
