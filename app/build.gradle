@@ -1,92 +1,66 @@
-/*
- * Copyright 2017 Google LLC
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * You may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-apply plugin: 'com.android.application'
-apply plugin: 'com.google.gms.google-services'
+plugins {
+    id 'com.android.application'
+    id 'com.google.gms.google-services'
+}
 
 android {
     namespace "com.example.virtualtourar"
-    compileSdkVersion 34
+    compileSdk 34
 
     defaultConfig {
         applicationId "com.example.virtualtourar"
-        // AR Required apps should be >= 24; you had 28 which is fine.
-        minSdkVersion 28
-        targetSdkVersion 34
+        minSdk 28
+        targetSdk 34
         versionCode 1
-        versionName '1.0'
+        versionName "1.0"
     }
 
+    // Java 11 keeps ARCore + Firebase + Glide happy without forcing newer toolchains
     compileOptions {
-        // Keep Java 17 if your toolchain supports it
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+        coreLibraryDesugaringEnabled true
     }
 
-    buildTypes {
-        release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+    packagingOptions {
+        resources {
+            // avoid META-INF collisions that show up when you add Google libs
+            excludes += ["/META-INF/{INDEX.LIST,DEPENDENCIES,LICENSE*,NOTICE*}"]
         }
     }
 }
 
 dependencies {
-    // ARCore (Google Play Services for AR)
+    // ARCore
     implementation 'com.google.ar:core:1.50.0'
-    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.0.4"
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
 
-    // Google Play Services
-    implementation 'com.google.android.gms:play-services-location:21.3.0'
-    implementation 'com.google.android.gms:play-services-auth:19.0.0'
+    // Google Play Services (Earth/Geospatial needs Location; the dialog uses base)
+    implementation 'com.google.android.gms:play-services-location:21.2.0'
+    implementation 'com.google.android.gms:play-services-base:18.5.0'
 
-    // Wavefront OBJ loader
-    implementation 'de.javagl:obj:0.4.0'
-
-    // AndroidX + Material (updated)
+    // AndroidX + Material (stable, not bleeding-edge)
     implementation 'androidx.appcompat:appcompat:1.6.1'
-    implementation "androidx.fragment:fragment-ktx:1.7.1"
-//    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.fragment:fragment:1.6.2'   // use -ktx only if you write Kotlin
+    implementation 'androidx.activity:activity:1.8.2'
+    implementation 'com.google.android.material:material:1.12.0'
     implementation 'androidx.cardview:cardview:1.0.0'
-    implementation 'androidx.concurrent:concurrent-futures:1.1.0'
-    implementation 'com.google.guava:guava:31.1-android'
 
-    // Activity Result API (for registerForActivityResult / ActivityResultLauncher)
-    implementation 'androidx.activity:activity:1.9.2'
-    // (Optional for Kotlin projects: implementation 'androidx.activity:activity-ktx:1.9.2')
-
-    // Firebase (BoM manages versions)
-    implementation platform('com.google.firebase:firebase-bom:34.0.0')
+    // Firebase (BoM pins versions)
+    implementation platform('com.google.firebase:firebase-bom:33.7.0')
     implementation 'com.google.firebase:firebase-analytics'
     implementation 'com.google.firebase:firebase-firestore'
     implementation 'com.google.firebase:firebase-auth'
     implementation 'com.google.firebase:firebase-storage'
-    implementation "com.google.android.material:material:1.13.0"
-
 
     // Glide
     implementation 'com.github.bumptech.glide:glide:4.16.0'
     annotationProcessor 'com.github.bumptech.glide:compiler:4.16.0'
 
-    implementation "com.google.android.exoplayer:exoplayer:2.19.1"
+    // OBJ loader for SampleRender
+    implementation 'de.javagl:obj:0.4.0'
 
-    // for egg animation
+    // Sceneform (only if you really use it; otherwise remove these two)
     implementation "com.gorisse.thomas.sceneform:sceneform:1.23.0"
     implementation "com.gorisse.thomas.sceneform:ux:1.23.0"
-//    implementation "com.gorisse.thomas.sceneform:animation:1.23.0"
-
-
-
 }

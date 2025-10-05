@@ -26,7 +26,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
-            android:text="Egg description…"
+            android:text="Description…"
             android:lineSpacingExtra="2dp"
             android:textAppearance="?attr/textAppearanceBody2"
             android:textColor="?attr/colorOnSurface" />

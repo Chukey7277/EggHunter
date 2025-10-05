@@ -1,4 +1,3 @@
-// app/src/main/java/com/example/virtualtourar/geofence/GeofenceManager.java
 package com.example.virtualtourar.geofence;
 
 import android.Manifest;
@@ -22,39 +21,62 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Central place to (re)register proximity geofences that keep working
+ * when the app is backgrounded or killed.
+ */
 public class GeofenceManager {
+
+    /** Notification channel used by GeofenceBroadcastReceiver. */
     public static final String CHANNEL_ID = "eggs_proximity_channel";
-    private static final float  RADIUS_METERS = 120f;   // trigger distance
-    private static final int    DWELL_MS     = 30_000;  // 30s loitering
-    private static final int    MAX = 95;               // margin under API limit (100)
+
+    /** Safe cap under the Play Services per-app geofence limit (100). */
+    private static final int MAX_FENCES = 95;
+
+    /** Enter if within this radius. Keep this modest or you’ll get spam. */
+    private static final float RADIUS_METERS = 120f;
+
+    /** How long you must loiter inside the fence before DWELL triggers. */
+    private static final int DWELL_MS = 30_000;
 
     private final Context context;
     private final GeofencingClient client;
-    private PendingIntent pendingIntent;
+    private PendingIntent geofencePendingIntent;
 
     public GeofenceManager(@NonNull Context ctx) {
-        context = ctx.getApplicationContext();
-        client = LocationServices.getGeofencingClient(context);
-        // Ensure notification channel exists for this geofence system
+        this.context = ctx.getApplicationContext();
+        this.client = LocationServices.getGeofencingClient(context);
+
+        // Make sure the channel exists before the first background post.
         NotificationHelper.ensureChannel(context, CHANNEL_ID);
     }
 
+    /**
+     * Registers geofences for the provided eggs.
+     * Call this after you’ve fetched the list and you have location permissions.
+     */
     public void registerForEggs(@NonNull List<EggEntry> eggs) {
-        // Build geofence list (cap to MAX, prefer unique coordinates)
-        List<Geofence> list = new ArrayList<>();
-        Map<String, NearbyEggStore.EggInfo> meta = new HashMap<>();
+        if (eggs.isEmpty()) return;
 
-        int count = 0;
+        // Build fences + side metadata we’ll read in the receiver.
+        final List<Geofence> fences = new ArrayList<>();
+        final Map<String, NearbyEggStore.EggInfo> meta = new HashMap<>();
+
+        int added = 0;
         for (EggEntry e : eggs) {
             if (e == null || e.id == null || e.geo == null) continue;
-            if (count >= MAX) break;
+            if (added >= MAX_FENCES) break;
 
-            list.add(new Geofence.Builder()
+            fences.add(new Geofence.Builder()
                     .setRequestId(e.id)
-                    .setCircularRegion(e.geo.getLatitude(), e.geo.getLongitude(), RADIUS_METERS)
+                    .setCircularRegion(
+                            e.geo.getLatitude(),
+                            e.geo.getLongitude(),
+                            RADIUS_METERS
+                    )
                     .setTransitionTypes(
-                            Geofence.GEOFENCE_TRANSITION_ENTER |
-                                    Geofence.GEOFENCE_TRANSITION_DWELL
+                            Geofence.GEOFENCE_TRANSITION_ENTER
+                                    | Geofence.GEOFENCE_TRANSITION_DWELL
                     )
                     .setLoiteringDelay(DWELL_MS)
                     .setExpirationDuration(Geofence.NEVER_EXPIRE)
@@ -65,46 +87,61 @@ public class GeofenceManager {
                     e.geo.getLatitude(),
                     e.geo.getLongitude()
             ));
-            count++;
+            added++;
         }
 
-        // Save metadata for lookups in the BroadcastReceiver
+        if (fences.isEmpty()) return;
+
+        // Persist metadata for the broadcast receiver to look up titles, etc.
         NearbyEggStore.save(context, meta);
 
-        if (list.isEmpty()) return;
-
-        GeofencingRequest req = new GeofencingRequest.Builder()
-                .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_ENTER)
-                .addGeofences(list)
+        final GeofencingRequest request = new GeofencingRequest.Builder()
+                .setInitialTrigger(
+                        GeofencingRequest.INITIAL_TRIGGER_ENTER
+                                | GeofencingRequest.INITIAL_TRIGGER_DWELL
+                )
+                .addGeofences(fences)
                 .build();
 
-        // Check location permission before adding geofences
+        // Runtime permission guard — background delivery still requires
+        // ACCESS_BACKGROUND_LOCATION in settings, but addGeofences only checks fine location.
         if (ActivityCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED) {
-            // Permissions not granted, don't crash
             return;
         }
 
-        client.addGeofences(req, getPendingIntent())
-                .addOnSuccessListener(v -> {
-                    // Successfully registered geofences
-                })
-                .addOnFailureListener(err -> {
-                    // Log error if needed
-                    err.printStackTrace();
-                });
+        // Remove previous registrations tied to this PendingIntent to avoid duplicates,
+        // then add the fresh set.
+        client.removeGeofences(getGeofencePendingIntent())
+                .addOnCompleteListener(t -> client.addGeofences(request, getGeofencePendingIntent())
+                        .addOnSuccessListener(unused -> {
+                            // OK
+                        })
+                        .addOnFailureListener(Throwable::printStackTrace));
     }
 
+    /** Removes all geofences registered through this manager (idempotent). */
     public void clearAll() {
-        client.removeGeofences(getPendingIntent());
+        client.removeGeofences(getGeofencePendingIntent());
     }
 
-    private PendingIntent getPendingIntent() {
-        if (pendingIntent != null) return pendingIntent;
-        Intent i = new Intent(context, GeofenceBroadcastReceiver.class);
+    /**
+     * Explicit broadcast PendingIntent targeting our receiver.
+     * This is what allows transitions to fire while the app is closed.
+     */
+    private PendingIntent getGeofencePendingIntent() {
+        if (geofencePendingIntent != null) return geofencePendingIntent;
+
+        Intent intent = new Intent(context, GeofenceBroadcastReceiver.class);
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
-        pendingIntent = PendingIntent.getBroadcast(context, 1001, i, flags);
-        return pendingIntent;
+
+        geofencePendingIntent = PendingIntent.getBroadcast(
+                context,
+                /*requestCode*/ 0,
+                intent,
+                flags
+        );
+        return geofencePendingIntent;
     }
 }

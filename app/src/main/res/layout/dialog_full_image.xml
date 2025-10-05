@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/image_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#CC000000">
 
+    <!-- If you add PhotoView later, replace with:
+         <com.github.chrisbanes.photoview.PhotoView ... /> -->
     <ImageView
         android:id="@+id/fullImage"
         android:layout_width="match_parent"
@@ -13,12 +16,26 @@
         android:scaleType="fitCenter"
         android:contentDescription="@string/egg_image_desc" />
 
-    <com.google.android.material.button.MaterialButton
+    <!-- Lightweight loading state (toggled in fragment) -->
+    <ProgressBar
+        android:id="@+id/progress"
+        style="?android:attr/progressBarStyleLarge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:visibility="gone" />
+
+    <!-- Close action: small FAB with an “X” icon -->
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
         android:id="@+id/btnClose"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Close"
-        style="@style/Widget.Material3.Button.TonalButton"
         android:layout_gravity="top|end"
-        android:layout_margin="16dp" />
+        android:layout_margin="16dp"
+        android:contentDescription="@string/close"
+
+        app:srcCompat="@drawable/ic_close_24"
+        app:tint="@android:color/white"
+        app:fabSize="mini" />
+
 </FrameLayout>

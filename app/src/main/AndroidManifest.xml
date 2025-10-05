@@ -3,7 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools"
     package="com.example.virtualtourar">
 
-  <!-- Permissions -->
+  <!-- Core permissions -->
   <uses-permission android:name="android.permission.CAMERA" />
   <uses-permission android:name="android.permission.VIBRATE" />
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -13,21 +13,22 @@
   <!-- Location (foreground + background for geofences) -->
   <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
   <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-  <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-  <!-- Android 10+ background location (required for geofences to trigger when app is backgrounded) -->
+  <!-- Android 10+ background location (needed for geofences in background) -->
   <uses-permission
       android:name="android.permission.ACCESS_BACKGROUND_LOCATION"
       tools:targetApi="q" />
 
-  <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+  <!-- Boot so we can re-register geofences after restart -->
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-  <uses-permission android:name="android.permission.BODY_SENSORS" />
-  <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
-  <!-- Required features -->
+  <!-- (Optional) Only if you actually use them elsewhere -->
+  <!-- <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" /> -->
+  <!-- <uses-permission android:name="android.permission.BODY_SENSORS" /> -->
+  <!-- <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" /> -->
+
+  <!-- Required device features -->
   <uses-feature android:name="android.hardware.camera" android:required="true" />
   <uses-feature android:name="android.hardware.camera.ar" android:required="true" />
-  <!-- OpenGL ES 3.0 (SampleRender uses GLES3) -->
   <uses-feature android:glEsVersion="0x00030000" android:required="true" />
 
   <application
@@ -39,7 +40,7 @@
       android:usesCleartextTraffic="false"
       tools:ignore="GoogleAppIndexingWarning">
 
-    <!-- ARCore API key + requirement -->
+    <!-- ARCore -->
     <meta-data
         android:name="com.google.android.ar.API_KEY"
         android:value="@string/arcore_api_key" />
@@ -47,21 +48,28 @@
         android:name="com.google.ar.core"
         android:value="required" />
 
-    <!-- Geofence broadcast receiver (runs even when app is not open) -->
+    <!-- Receiver used by GeofencingClient PendingIntent.
+         No intent-filter; keep exported=false. -->
     <receiver
         android:name=".geofence.GeofenceBroadcastReceiver"
         android:exported="false" />
 
-    <!-- Re-register geofences after device reboot (optional but recommended) -->
+    <!-- Re-register geofences after device reboot or app update.
+         Needs exported=true to receive system broadcasts. -->
     <receiver
         android:name=".geofence.BootCompletedReceiver"
-        android:exported="false">
+        android:exported="true"
+        android:directBootAware="true">
       <intent-filter>
         <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <!-- Optional: receive earlier, before user unlocks -->
+        <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+        <!-- Re-register after app update -->
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
       </intent-filter>
     </receiver>
 
-    <!-- Launcher activity -->
+    <!-- Launcher -->
     <activity
         android:name=".HomeActivity"
         android:theme="@style/AppTheme"
@@ -72,8 +80,7 @@
       </intent-filter>
     </activity>
 
-
-    <!-- Other activities -->
+    <!-- Other screens -->
     <activity android:name=".GeospatialActivity" />
     <activity android:name=".CollectiblesActivity" />
 

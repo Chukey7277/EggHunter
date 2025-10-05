@@ -1,4 +1,3 @@
-// app/src/main/java/com/example/virtualtourar/geofence/GeofenceBroadcastReceiver.java
 package com.example.virtualtourar.geofence;
 
 import android.Manifest;
@@ -23,58 +22,70 @@ import com.google.android.gms.location.GeofencingEvent;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Receives geofence transitions even when the app is killed.
+ * Posts a notification that deep-links into the AR screen.
+ */
 public class GeofenceBroadcastReceiver extends BroadcastReceiver {
+
     @Override
     public void onReceive(Context context, Intent intent) {
         GeofencingEvent event = GeofencingEvent.fromIntent(intent);
         if (event == null || event.hasError()) return;
 
-        int type = event.getGeofenceTransition();
-        if (type != Geofence.GEOFENCE_TRANSITION_ENTER
-                && type != Geofence.GEOFENCE_TRANSITION_DWELL) return;
+        int transition = event.getGeofenceTransition();
+        if (transition != Geofence.GEOFENCE_TRANSITION_ENTER
+                && transition != Geofence.GEOFENCE_TRANSITION_DWELL) {
+            return;
+        }
 
         List<Geofence> triggers = event.getTriggeringGeofences();
         if (triggers == null || triggers.isEmpty()) return;
 
-        // Metadata lookup
-        Map<String, NearbyEggStore.EggInfo> meta = NearbyEggStore.load(context);
+        // Ensure channel exists (no-op if already there).
+        NotificationHelper.ensureChannel(context, GeofenceManager.CHANNEL_ID);
 
-        // Notify for the first triggered id (or you could loop)
+        // Use the first trigger (or loop if you want multiple notifications).
         String id = triggers.get(0).getRequestId();
-        NearbyEggStore.EggInfo info = meta.get(id);
-        String title = (info != null && info.title != null && !info.title.isEmpty())
-                ? info.title : "An egg";
 
-        // Tap -> open the AR screen (and we pass the eggId so UI can show details)
+        // Lookup metadata saved by GeofenceManager.
+        Map<String, NearbyEggStore.EggInfo> meta = NearbyEggStore.load(context);
+        NearbyEggStore.EggInfo info = meta.get(id);
+        String prettyTitle = (info != null && info.title != null && !info.title.isEmpty())
+                ? info.title
+                : "An egg";
+
+        // Deep link to AR screen with the selected eggId.
         Intent open = new Intent(context, GeospatialActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 .putExtra("openEggId", id);
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
-        PendingIntent content = PendingIntent.getActivity(context, id.hashCode(), open, flags);
 
-        // Build notification (channel created in NotificationHelper)
+        int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= 23) piFlags |= PendingIntent.FLAG_IMMUTABLE;
+        PendingIntent contentIntent = PendingIntent.getActivity(
+                context, id.hashCode(), open, piFlags
+        );
+
         NotificationCompat.Builder nb = new NotificationCompat.Builder(context, GeofenceManager.CHANNEL_ID)
-                // TODO: Replace with your own small icon in res/drawable
-                .setSmallIcon(R.drawable.ic_stat_egg)
+                .setSmallIcon(R.drawable.ic_stat_egg) // make sure this exists
                 .setContentTitle("Egg nearby")
-                .setContentText(title + " is close — tap to view!")
+                .setContentText(prettyTitle + " is close — tap to view!")
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setAutoCancel(true)
-                .setContentIntent(content)
-                .setVibrate(new long[]{0, 250, 150, 250}); // vibrate pattern
+                .setContentIntent(contentIntent)
+                .setVibrate(new long[]{0, 250, 150, 250});
 
-        // Check runtime permission for notifications (Android 13+)
+        // Android 13+ requires POST_NOTIFICATIONS runtime permission.
         if (Build.VERSION.SDK_INT >= 33) {
             if (ActivityCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
                     != PackageManager.PERMISSION_GRANTED) {
-                return; // Permission not granted, don't show notification
+                return;
             }
         }
 
         NotificationManagerCompat.from(context).notify(id.hashCode(), nb.build());
 
-        // Extra haptic punch (optional)
+        // Optional haptic nudge.
         try {
             Vibrator v = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
             if (v != null && v.hasVibrator()) {
