@@ -6,7 +6,8 @@
     <color name="white">#FFFFFF</color>
     <color name="lavender_bg">#E6E6FA</color>
     <color name="dialog_title">#4B2067</color> <!-- Deep purple -->
-    <color name="dialog_message">#333344</color> <!-- Dark grayish blue -->
+    <color name="dialog_message">#333344</color><!-- Dark grayish blue -->
+    <color name="orange">#FF9800</color>
 
 <!-- Blues -->
 <color name="blue_lightest">#E3F2FD</color>  <!-- Very light blue -->

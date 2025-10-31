@@ -107,14 +107,14 @@ public class GeospatialActivity extends AppCompatActivity
     private static final String EGG_TEXTURE  = "models/Image_0.png";
 
     // ---- Model tuning (global defaults) ----
-    private static final float MODEL_SCALE_DEFAULT = 0.030f;   // was 0.06f → half the size
+    private static final float MODEL_SCALE_DEFAULT = 0.020f;   // was 0.06f → half the size
     private static final float MODEL_LIFT_M        = 0.01f;
 
     // Optional: gentle auto-scaling so near objects aren't gigantic
-    private static final float MODEL_SCALE_BASE     = 0.010f;  // minimum baseline
-    private static final float MODEL_SCALE_K_PER_M  = 0.010f;  // how much scale grows per meter
-    private static final float MODEL_SCALE_MIN      = 0.008f;  // clamp small
-    private static final float MODEL_SCALE_MAX      = 0.060f;  // clamp large
+    private static final float MODEL_SCALE_BASE     = 0.008f;  // minimum baseline
+    private static final float MODEL_SCALE_K_PER_M  = 0.007f;  // how much scale grows per meter
+    private static final float MODEL_SCALE_MIN      = 0.005f;  // clamp small
+    private static final float MODEL_SCALE_MAX      = 0.080f;  // clamp large
 
     // OBJ orientation defaults
     private static final float MODEL_ROT_X_DEG = 0f;
@@ -131,14 +131,14 @@ public class GeospatialActivity extends AppCompatActivity
     private static final double MAX_V_ACC_TO_PLACE = 12.0;  // was 10.0
     private static final double HEADING_MAX_ACC_DEG = 20.0; // was 25.0
     private static final double ALT_GLOBAL_OFFSET_M = 0.0;
-    private static final long   LOCALIZE_STABLE_MS  = 1000L; // was 1500L
+    private static final long   LOCALIZE_STABLE_MS  = 400L; // was 1500L
     private long lastAccOkayAtMs = 0L;
     // Increase "grace" before force-placing a bit
-    private static final long   STUCK_FORCE_PLACE_MS = 15_000L; // was 9000L
+    private static final long   STUCK_FORCE_PLACE_MS = 4_000L; // was 9000L
 
     // Smoothed camera geospatial pose (EMA)
     private static final double EMA_ALPHA = 0.35;
-    private static final int    MIN_STABLE_SAMPLES = 5; // was 5
+    private static final int    MIN_STABLE_SAMPLES = 3; // was 5
     private int emaSamples = 0;
     private double emaLat, emaLng, emaAlt;
     private Double lastGoodYawDeg = null;
@@ -164,9 +164,11 @@ public class GeospatialActivity extends AppCompatActivity
     private static final int    NOTIF_ID_BASE    = 7000;
 
     // Rough object-space bounding radius of your star.obj (units before scale)
-    private static final float MESH_RADIUS_UNSCALED = 0.50f; // tweak if needed
+    // Rough unscaled radii for picking (object-space)
+    private static final float STAR_RADIUS_UNSCALED   = 0.50f;
+    private static final float PUZZLE_RADIUS_UNSCALED = 0.45f;
+    private static final float PICK_MARGIN_M = 0.10f; // keep // tweak if needed
     // Extra margin so you can hit the tips more easily
-    private static final float PICK_MARGIN_M = 0.05f;
 
     // UI
     private GLSurfaceView surfaceView;
@@ -187,6 +189,9 @@ public class GeospatialActivity extends AppCompatActivity
     private Mesh   eggMesh;
     private Texture eggTexture;
     private Shader  eggShader;
+    private Mesh    puzzleMesh;
+    private Texture puzzleTexture;
+    private Shader  puzzleShader;
 
     // Anchors
     private final Object anchorsLock = new Object();
@@ -198,7 +203,11 @@ public class GeospatialActivity extends AppCompatActivity
     @GuardedBy("anchorsLock") private final Map<String, String> anchorKindByEggId = new HashMap<>(); // "CLOUD" | "GEO"
 
     // Pending Cloud
-    private static class PendingCloud { final Anchor a; final EggEntry e; PendingCloud(Anchor a, EggEntry e){ this.a=a; this.e=e; } }
+    private static class PendingCloud {
+        final Anchor a; final EggEntry e; final long startedAt = System.currentTimeMillis();
+        PendingCloud(Anchor a, EggEntry e){ this.a=a; this.e=e; }
+    }
+    private static final long CLOUD_RESOLVE_FALLBACK_MS = 10_000L; // 10s
     private final Map<String, PendingCloud> pendingCloudByEggId = new HashMap<>();
 
     // GEO fallback
@@ -239,6 +248,12 @@ public class GeospatialActivity extends AppCompatActivity
 
     private static final int REQUEST_CODE = 700;
     private static final int REQUEST_BACKGROUND_LOCATION = 701;
+
+    // --- add next to EGG_MODEL / EGG_TEXTURE ---
+    private static final String PUZZLE_MODEL   = "models/magnifying_glass.obj";
+    private static final String PUZZLE_TEXTURE = "models/magnifying_glass1.png";
+    private static final float STAR_VISUAL_MULT   = 0.48f; // shrink star ~25%
+    private static final float PUZZLE_VISUAL_MULT = 3.10f; // enlarge magnifier ~40%
 
     private static final class PoseLite {
         final double lat, lng, alt, hAcc, vAcc, heading, headingAcc;
@@ -455,6 +470,16 @@ public class GeospatialActivity extends AppCompatActivity
                     .setDepthTest(true)
                     .setDepthWrite(true)
                     .setTexture("u_Texture", eggTexture);
+            // --- Magnifier (puzzle) pipeline ---
+            puzzleMesh = Mesh.createFromAsset(render, PUZZLE_MODEL);
+            puzzleTexture = Texture.createFromAsset(
+                    render, PUZZLE_TEXTURE, Texture.WrapMode.CLAMP_TO_EDGE, Texture.ColorFormat.SRGB);
+            puzzleShader = Shader.createFromAssets(
+                            render, "shaders/ar_unlit_object.vert", "shaders/ar_unlit_object.frag", null)
+                    .setFloat("u_Opacity", 1.0f)
+                    .setDepthTest(true)
+                    .setDepthWrite(true)
+                    .setTexture("u_Texture", puzzleTexture);
 
             backgroundReady = true;
         } catch (IOException e) {
@@ -479,7 +504,9 @@ public class GeospatialActivity extends AppCompatActivity
                 "shaders/ar_unlit_object.vert",
                 "shaders/ar_unlit_object.frag",
                 EGG_MODEL,
-                EGG_TEXTURE
+                EGG_TEXTURE,
+                PUZZLE_MODEL,
+                PUZZLE_TEXTURE
         };
         boolean ok = true;
         for (String s : required) {
@@ -590,10 +617,10 @@ public class GeospatialActivity extends AppCompatActivity
             final double vAcc = camPoseLite.vAcc;
 
             // Relaxed thresholds
-            final double MAX_H_ACC_RELAXED = 15.0;
-            final double MAX_V_ACC_RELAXED = 12.0;
-            final int    MIN_SAMPLES_RELAX = 4;
-            final long   STABLE_MS_RELAXED = 1000L;
+            final double MAX_H_ACC_RELAXED = 25.0; //was 15
+            final double MAX_V_ACC_RELAXED = 20.0; //was 12
+            final int    MIN_SAMPLES_RELAX = 2;    //was 2
+            final long   STABLE_MS_RELAXED = 400L; //was 1000
 
             final boolean trackingOk =
                     earth.getTrackingState() == TrackingState.TRACKING &&
@@ -677,6 +704,9 @@ public class GeospatialActivity extends AppCompatActivity
                 Matrix.multiplyMM(modelMatrix, 0, modelMatrix, 0, R, 0);
                 Matrix.translateM(modelMatrix, 0, 0f, MODEL_LIFT_M, 0f);
 
+                // Decide which model this is (puzzle vs star) ONCE
+                boolean puzzle = isPuzzle(entry.getValue());
+
                 // 1) per-egg override if provided
                 float s = getPerEggScaleOrNeg1(entry.getValue());
                 if (s < 0f) {
@@ -687,6 +717,9 @@ public class GeospatialActivity extends AppCompatActivity
                     s = (distanceM > 0f) ? autoScaleForDistance(distanceM) : MODEL_SCALE_DEFAULT;
                 }
 
+                // ➜ APPLY visual multipliers BEFORE building S (so size really changes)
+                s *= puzzle ? PUZZLE_VISUAL_MULT : STAR_VISUAL_MULT;
+
                 float[] S = new float[16];
                 Matrix.setIdentityM(S, 0);
                 S[0] = s; S[5] = s; S[10] = s;
@@ -695,10 +728,14 @@ public class GeospatialActivity extends AppCompatActivity
                 Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, modelMatrix, 0);
                 Matrix.multiplyMM(mvpMatrix, 0, projZoomed, 0, mvMatrix, 0); // <-- use zoomed projection
 
-                if (eggMesh != null && eggTexture != null && eggShader != null) {
-                    eggShader.setMat4("u_ModelViewProjection", mvpMatrix);
-                    eggShader.setTexture("u_Texture", eggTexture);
-                    render.draw(eggMesh, eggShader, virtualSceneFramebuffer);
+                Mesh   mesh   = puzzle ? puzzleMesh    : eggMesh;
+                Shader shader = puzzle ? puzzleShader  : eggShader;
+                Texture tex   = puzzle ? puzzleTexture : eggTexture;
+
+                if (mesh != null && shader != null && tex != null) {
+                    shader.setMat4("u_ModelViewProjection", mvpMatrix);
+                    shader.setTexture("u_Texture", tex);
+                    render.draw(mesh, shader, virtualSceneFramebuffer);
                 }
             }
         }
@@ -766,6 +803,9 @@ public class GeospatialActivity extends AppCompatActivity
         for (EggEntry e : eggs) {
             if (e == null || e.id == null) continue;
 
+            // Magnifier/puzzle anchors are GEO-only: never try Cloud
+            if (isPuzzle(e)) continue;
+
             // If we already have a CLOUD anchor for this egg, skip entirely
             synchronized (anchorsLock) {
                 String kind = anchorKindByEggId.get(e.id);
@@ -832,6 +872,9 @@ public class GeospatialActivity extends AppCompatActivity
                 }
                 case NONE:
                 case TASK_IN_PROGRESS:
+                    if (System.currentTimeMillis() - pc.startedAt > CLOUD_RESOLVE_FALLBACK_MS && pc.e.geo != null) {
+                        allowGeoFallbackIds.add(eggId); // show GEO placeholder now
+                    }
                     break;
                 default:
                     Log.w(TAG, "Cloud resolve error " + st + " for " + eggId + " — enabling GEO fallback if possible.");
@@ -868,8 +911,8 @@ public class GeospatialActivity extends AppCompatActivity
             if (!allowsGeo(e)) continue;               // must allow GEO and have coords
             if (e.geo == null) continue;
 
-            // Cloud-first: do not place GEO unless fallback explicitly allowed
-            if (wantsCloud(e) && !allowGeoFallbackIds.contains(e.id)) continue;
+//            // Cloud-first: do not place GEO unless fallback explicitly allowed
+//            if (wantsCloud(e) && !allowGeoFallbackIds.contains(e.id)) continue;
 
             Long last = anchorAttemptAtMs.get(e.id);
             if (last != null && (now - last) < ANCHOR_RETRY_MS) continue;
@@ -1106,9 +1149,9 @@ public class GeospatialActivity extends AppCompatActivity
             final EggEntry hit = best.egg;
             vibrate(20);
             runOnUiThread(() -> {
-                if (!isFinishing() && !isDestroyed()) showEggOrQuiz(hit);
+                if (!isFinishing() && !isDestroyed()) showStarOrPuzzle(hit);
             });
-        } else {
+        }else {
             runOnUiThread(() ->
                     Toast.makeText(this, "No star here — try tapping right on it or pinch-zoom the camera.", Toast.LENGTH_SHORT).show()
             );
@@ -1161,22 +1204,27 @@ public class GeospatialActivity extends AppCompatActivity
                 if (vd <= 0f) continue;           // behind the camera
                 float distanceMeters = len3(v);   // center distance
 
-                // ---- SCALE-AWARE PICK RADIUS ----
-                // Compute the rendered scale s for this anchor (same logic as draw):
+                /// ---- SCALE-AWARE PICK RADIUS ----
+                boolean puzzle = isPuzzle(entry.getValue());
+
+// Compute the rendered scale s for this anchor (same logic as draw)
                 float s = getPerEggScaleOrNeg1(entry.getValue());
                 if (s < 0f) {
-                    // If no per-egg override, use the auto-distance scaling
                     s = autoScaleForDistance(distanceMeters);
                 }
-                // Object's approximate radius in meters after scaling:
-                float objectRadiusM = MESH_RADIUS_UNSCALED * s + PICK_MARGIN_M;
+                s *= puzzle ? PUZZLE_VISUAL_MULT : STAR_VISUAL_MULT;
 
-                // Keep your existing distance-based "assist" radius, then take the max.
+// Use per-model unscaled radius
+                float baseR = puzzle ? PUZZLE_RADIUS_UNSCALED : STAR_RADIUS_UNSCALED;
+                float objectRadiusM = baseR * s + PICK_MARGIN_M;
+
+// Assist radius (keep your distance-based assist)
                 float assistRadius = Math.min(
                         PICK_MAX_RADIUS_M,
                         PICK_BASE_RADIUS_M + PICK_RADIUS_PER_M * Math.min(40f, distanceMeters)
                 );
 
+// Final radius = max(object radius, assist)
                 float radius = Math.max(objectRadiusM, assistRadius);
 
                 // Closest distance from ray to center
@@ -1375,6 +1423,18 @@ public class GeospatialActivity extends AppCompatActivity
     private static boolean typeHas(@Nullable String t, String key) {
         return t != null && t.toUpperCase(Locale.US).contains(key);
     }
+    private boolean isPuzzle(@Nullable EggEntry e) {
+        if (e == null) return false;
+        if (typeHas(e.anchorType, "GEO_PUZZLE")) return true;
+
+        try {
+            Map<?,?> m = tryReadMetaMap(e);
+            Object v = (m != null) ? m.get("model") : null;
+            if (v instanceof String && "puzzle".equalsIgnoreCase((String) v)) return true;
+        } catch (Throwable ignore) {}
+
+        return false;
+    }
     private static boolean wantsCloud(EggEntry e) {
         return typeHas(e.anchorType, "CLOUD");
     }
@@ -1386,8 +1446,8 @@ public class GeospatialActivity extends AppCompatActivity
     /** Return a per-egg scale if present and sane, else -1 to indicate "no override". */
     private float getPerEggScaleOrNeg1(EggEntry e) {
         Float eggScaleOverride = getEggScale(e);
-        if (eggScaleOverride != null && eggScaleOverride > 0f && eggScaleOverride < 1.0f) {
-            return eggScaleOverride;
+        if (eggScaleOverride != null && eggScaleOverride > 0f) {
+            return Math.min(eggScaleOverride, MODEL_SCALE_MAX);
         }
         return -1f;
     }
@@ -1614,6 +1674,60 @@ public class GeospatialActivity extends AppCompatActivity
         int m = totalSec / 60;
         int s = totalSec % 60;
         return m + ":" + (s < 10 ? "0" + s : String.valueOf(s));
+    }
+    private void showStarOrPuzzle(EggEntry egg) {
+        if (isPuzzle(egg)) {
+            showPuzzleClueDialog(egg);
+            return;
+        }
+        String kind;
+        synchronized (anchorsLock) { kind = anchorKindByEggId.get(egg.id); }
+        if ("CLOUD".equals(kind)) {
+            // Cloud is accurately placed → skip quiz
+            showEggDialog(egg);
+        } else {
+            // GEO placeholder → keep your existing quiz gate (if any)
+            showEggOrQuiz(egg);
+        }
+    }
+
+    private void showPuzzleClueDialog(EggEntry egg) {
+        // Simple programmatic layout; no new XML required
+        android.widget.LinearLayout root = new android.widget.LinearLayout(this);
+        root.setOrientation(android.widget.LinearLayout.VERTICAL);
+        int pad = dp(16);
+        root.setPadding(pad, pad, pad, pad);
+
+        ImageView img = new ImageView(this);
+        img.setAdjustViewBounds(true);
+        img.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        img.setMinimumHeight(dp(180));
+        img.setBackgroundColor(0x11000000);
+        root.addView(img, new android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT, dp(220)));
+
+        TextView hint = new TextView(this);
+        hint.setText("Go and find this place.");
+        hint.setTextSize(16f);
+        hint.setPadding(0, dp(12), 0, 0);
+        root.addView(hint);
+
+        // Load the first image that was made mandatory in Marker app
+        loadIntoImageView(egg.firstImageOrUrl(), img, egg.id);
+
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(egg.title != null && !egg.title.isEmpty() ? egg.title : "Puzzle")
+                .setView(root)
+                .setPositiveButton("Got It", (d, w) -> {
+                    // Reveal full details (title + desc + media)
+                    showEggDialog(egg);
+                })
+                .setNegativeButton("I Give Up", (d, w) -> {
+                    // Take back: just close the dialog, return to AR view
+                    d.dismiss();
+                })
+                .setCancelable(true)
+                .show();
     }
 
     private void showEggOrQuiz(EggEntry egg) {
