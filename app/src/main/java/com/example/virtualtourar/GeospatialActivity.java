@@ -253,7 +253,7 @@ public class GeospatialActivity extends AppCompatActivity
     private static final String PUZZLE_MODEL   = "models/magnifying_glass.obj";
     private static final String PUZZLE_TEXTURE = "models/magnifying_glass1.png";
     private static final float STAR_VISUAL_MULT   = 0.48f; // shrink star ~25%
-    private static final float PUZZLE_VISUAL_MULT = 3.10f; // enlarge magnifier ~40%
+    private static final float PUZZLE_VISUAL_MULT = 5.10f; // enlarge magnifier ~40%
 
     private static final class PoseLite {
         final double lat, lng, alt, hAcc, vAcc, heading, headingAcc;
@@ -867,7 +867,8 @@ public class GeospatialActivity extends AppCompatActivity
                     EggEntry ee = pc.e;
                     putUniqueAnchor("CLOUD", a, ee); // replace any GEO, ensure single-owner
                     done.add(eggId);
-                    Log.d(TAG, "Cloud resolve SUCCESS for " + eggId + " (installed as sole owner)");
+                    Log.d(TAG, "Cloud reso" +
+                            "lve SUCCESS for " + eggId + " (installed as sole owner)");
                     break;
                 }
                 case NONE:
