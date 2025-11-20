@@ -91,6 +91,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 
 /** Geospatial viewer (SampleRender): Cloud resolve + GEO/TERRAIN + facade-aware orientation + quiz gating + egg-layer digicam zoom. */
 public class GeospatialActivity extends AppCompatActivity
@@ -249,9 +252,8 @@ public class GeospatialActivity extends AppCompatActivity
     private static final int REQUEST_CODE = 700;
     private static final int REQUEST_BACKGROUND_LOCATION = 701;
 
-    // --- add next to EGG_MODEL / EGG_TEXTURE ---
-    private static final String PUZZLE_MODEL   = "models/magnifying_glass.obj";
-    private static final String PUZZLE_TEXTURE = "models/magnifying_glass1.png";
+    private static final String PUZZLE_MODEL   = "models/magnifying_glass1.obj";
+    private static final String PUZZLE_TEXTURE = "models/Image_01.png";
     private static final float STAR_VISUAL_MULT   = 0.48f; // shrink star ~25%
     private static final float PUZZLE_VISUAL_MULT = 5.10f; // enlarge magnifier ~40%
 
@@ -268,7 +270,9 @@ public class GeospatialActivity extends AppCompatActivity
     private long resumedAtMs = 0L;
     private boolean waitToastShown = false;
     private boolean anchorLoadingHintShown = false;
-    // ---------------------------------------
+    // At top-level fields
+    private volatile boolean noInternetDialogShown = false;
+    @Nullable private AlertDialog noInternetDialog = null;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -527,6 +531,40 @@ public class GeospatialActivity extends AppCompatActivity
 
     @Override public void onDrawFrame(SampleRender render) {
         if (session == null) return;
+        // ---- INTERNET CHECK ----
+        if (!hasInternetConnection()) {
+            if (!noInternetDialogShown) {
+                noInternetDialogShown = true;
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    if (noInternetDialog != null && noInternetDialog.isShowing()) return;
+
+                    noInternetDialog = new AlertDialog.Builder(GeospatialActivity.this)
+                            .setTitle("No Internet Connection")
+                            .setMessage("This app requires an active internet connection.\n\n" +
+                                    "Please check your network and restart the app.")
+                            .setCancelable(false)
+                            .setPositiveButton("Exit", (d, w) -> {
+                                d.dismiss();
+                                finish();          // close activity
+                            })
+                            .create();
+                    noInternetDialog.show();
+                });
+            }
+            return; // stop AR loop until user fixes the issue
+        } else {
+            // Internet came back → clean up dialog, allow rendering to continue
+            if (noInternetDialogShown) {
+                noInternetDialogShown = false;
+                runOnUiThread(() -> {
+                    if (noInternetDialog != null && noInternetDialog.isShowing()) {
+                        noInternetDialog.dismiss();
+                    }
+                    noInternetDialog = null;
+                });
+            }
+        }
         if (!backgroundReady || backgroundRenderer == null) return;
 
         if (!hasSetTextureNames) {
@@ -653,7 +691,7 @@ public class GeospatialActivity extends AppCompatActivity
                     placeGeoAnchorsExactly(earth, camPoseLite);
                     checkNearbyNudges(camPoseLite);
                 }
-            } else if (force) {
+            } else if (force && hAcc <= 40.0 && vAcc <= 30.0) {
                 // Grace period elapsed — try anyway so user sees something.
                 placeGeoAnchorsExactly(earth, camPoseLite);
                 checkNearbyNudges(camPoseLite);
@@ -909,12 +947,22 @@ public class GeospatialActivity extends AppCompatActivity
                 if (anchorByEggId.containsKey(e.id)) continue;
             }
 
-            if (!allowsGeo(e)) continue;               // must allow GEO and have coords
-            if (e.geo == null) continue;
+            if (!allowsGeo(e)) continue;   // must allow GEO
+            if (e.geo == null) continue;   // must have coords
 
-//            // Cloud-first: do not place GEO unless fallback explicitly allowed
-//            if (wantsCloud(e) && !allowGeoFallbackIds.contains(e.id)) continue;
+            // 🔹1) Cloud-first: don't place GEO for CLOUD eggs unless fallback is allowed
+            if (wantsCloud(e) && !allowGeoFallbackIds.contains(e.id)) continue;
 
+            // 🔹2) Distance filter: only place anchors that are "near" the current camera
+            double dH = haversineMeters(
+                    currentPose.lat, currentPose.lng,
+                    e.geo.getLatitude(), e.geo.getLongitude());
+
+            if (dH > 40.0) {   // tweak 40.0 m as you like
+                continue;       // too far, skip this egg for now
+            }
+
+            // (keep your existing retry/backoff logic below this)
             Long last = anchorAttemptAtMs.get(e.id);
             if (last != null && (now - last) < ANCHOR_RETRY_MS) continue;
             anchorAttemptAtMs.put(e.id, now);
@@ -2105,6 +2153,24 @@ public class GeospatialActivity extends AppCompatActivity
                         REQUEST_BACKGROUND_LOCATION
                 );
             }
+        }
+    }
+    private boolean hasInternetConnection() {
+        try {
+            ConnectivityManager cm =
+                    (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return false;
+
+            Network nw = cm.getActiveNetwork();
+            if (nw == null) return false;
+
+            NetworkCapabilities caps = cm.getNetworkCapabilities(nw);
+            return caps != null &&
+                    (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                            || caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                            || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET));
+        } catch (Exception e) {
+            return false;
         }
     }
 
